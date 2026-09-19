@@ -1,0 +1,39 @@
+# Unnecessary Files
+.env
+.mcp-jobs.json
+.video-cache.json
+output/
+.github/
+.agent/
+.claude-plugin/
+assets/
+node_modules/
+Dockerfile
+docker-compose.yml
+.dockerignore
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+SECURITY.md
+ROADMAP.md
+REPOSITORY_GROWTH_CHECKLIST.md
+CLAWHUB_GUIDE.md
+openclaw.plugin.json
+claude-code-config.json
+
+# Build and Electron Artifacts
+release/
+portable-python/
+dist/
+dist-electron/
+stderr-test.log
+
+
+# Media files
+*.mp4
+*.mp3
+*.wav
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico

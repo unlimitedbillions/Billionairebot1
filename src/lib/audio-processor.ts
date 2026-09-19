@@ -1,0 +1,230 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { spawnSync } from 'child_process';
+// @ts-ignore - ffmpeg-static has no type declarations (but resolves at runtime)
+import ffmpeg from 'ffmpeg-static';
+// @ts-expect-error - ffprobe-static has no type declarations
+import ffprobe from 'ffprobe-static';
+import { logInfo, logError } from '../runtime';
+
+const console = {
+    log: (...args: any[]) => logInfo(...args),
+    error: (...args: any[]) => logError(...args),
+};
+
+// Use type casting since ffmpeg-static usually exports the path string directly
+const FFMPEG_PATH = typeof ffmpeg === 'string' ? ffmpeg : (ffmpeg as any)?.path;
+const FFPROBE_PATH = typeof ffprobe === 'string' ? ffprobe : (ffprobe as any)?.path;
+
+function runFfmpeg(args: string[]): string {
+    const cmd = FFMPEG_PATH || 'ffmpeg';
+    const result = spawnSync(cmd, args, { encoding: 'utf-8', stdio: 'pipe' });
+    if (result.error) throw new Error(`FFmpeg error: ${result.error.message}`);
+    if (result.status !== 0)
+        throw new Error(`FFmpeg failed (exit ${result.status}): ${result.stderr?.trim() || result.stdout?.trim()}`);
+    return result.stdout || '';
+}
+
+function runFfprobe(args: string[]): string {
+    const cmd = FFPROBE_PATH || 'ffprobe';
+    const result = spawnSync(cmd, args, { encoding: 'utf-8', stdio: 'pipe' });
+    if (result.error) throw new Error(`FFprobe error: ${result.error.message}`);
+    if (result.status !== 0)
+        throw new Error(`FFprobe failed (exit ${result.status}): ${result.stderr?.trim() || result.stdout?.trim()}`);
+    return result.stdout || '';
+}
+
+/**
+ * Get accurate audio duration using ffprobe
+ */
+export async function getAudioDuration(filePath: string): Promise<number> {
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`Audio file not found: ${filePath}`);
+    }
+
+    try {
+        const result = runFfprobe(['-v', 'quiet', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath]);
+        const duration = parseFloat(result.trim());
+
+        if (isNaN(duration)) {
+            throw new Error(`Could not parse duration for ${filePath}`);
+        }
+
+        return duration;
+    } catch (error: any) {
+        logError(`[AUDIO-PROC] Failed to get duration for ${filePath}: ${error.message}`);
+        throw error;
+    }
+}
+
+/**
+ * Split a single audio file into multiple chunks based on durations
+ */
+export async function splitAudioFile(
+    filePath: string,
+    durations: number[],
+    outputDir: string,
+): Promise<Map<number, { path: string; duration: number }>> {
+    const audioFiles = new Map<number, { path: string; duration: number }>();
+    let currentTime = 0;
+
+    if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    for (let i = 0; i < durations.length; i++) {
+        const sceneNumber = i + 1;
+        const duration = durations[i];
+        const outputPath = path.join(outputDir, `scene_${sceneNumber}.mp3`);
+
+        runFfmpeg([
+            '-y',
+            '-i',
+            filePath,
+            '-ss',
+            String(currentTime),
+            '-t',
+            String(duration),
+            '-ac',
+            '1',
+            '-ar',
+            '44100',
+            '-b:a',
+            '128k',
+            outputPath,
+        ]);
+
+        audioFiles.set(sceneNumber, { path: outputPath, duration });
+        currentTime += duration;
+    }
+
+    return audioFiles;
+}
+
+/**
+ * Generate a silent audio file of specific duration
+ */
+export async function generateSilence(duration: number, outputDir: string, sceneNumber: number): Promise<string> {
+    if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const outputPath = path.join(outputDir, `silence_${sceneNumber}.mp3`);
+
+    runFfmpeg([
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'anullsrc=r=44100:cl=mono',
+        '-t',
+        String(duration),
+        '-acodec',
+        'libmp3lame',
+        '-b:a',
+        '128k',
+        outputPath,
+    ]);
+
+    return outputPath;
+}
+
+/**
+ * Apply auto-ducking to background music based on voiceover tracks
+ */
+/** True when the file has at least one audio stream (ffprobe probe). */
+function hasAudioStream(file: string): boolean {
+    // Guard against path-injection / traversal: reject NUL bytes and `..`
+    // segments, then resolve and confine the path to the project root so a
+    // crafted path cannot redirect the ffprobe probe to an unexpected file.
+    // CodeQL: js/path-injection.
+    if (typeof file !== 'string' || file.includes('\u0000') || file.includes('..')) return false;
+    const root = path.resolve(process.cwd());
+    const resolved = path.resolve(root, file);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) return false;
+    if (!fs.existsSync(resolved)) return false;
+    try {
+        const out = runFfprobe(['-v', 'quiet', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', resolved]);
+        return out.split('\n').some((l) => l.trim() === 'audio');
+    } catch {
+        return false;
+    }
+}
+
+export async function applyAutoDucking(musicPath: string, voicePaths: string[], outputDir: string): Promise<string> {
+    if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const outputPath = path.join(outputDir, 'ducked-bgm.mp3');
+    const tempCombinedVoice = path.join(outputDir, 'temp_combined_voice.mp3');
+
+    // BUG A5: voice inputs can be AUDIO-LESS (e.g. a screen recording with no
+    // track). The naive `[0:a]concat` then fails to open `[0:a]`, so the
+    // combined-voice file is never produced and the ducking step throws
+    // "No such file". Filter to audio-bearing inputs first.
+    const audibleVoicePaths = voicePaths.filter((p) => hasAudioStream(p));
+    if (audibleVoicePaths.length === 0) {
+        // Nothing to duck against → just return the music unchanged.
+        return musicPath;
+    }
+
+    try {
+        // 1. Combine all voiceover tracks into one continuous track
+        const concatInputArgs: string[] = ['-y'];
+        for (const p of audibleVoicePaths) {
+            concatInputArgs.push('-i', p);
+        }
+        const filterParts = audibleVoicePaths.map((_, i) => `[${i}:a]`).join('');
+        const concatFilter = `${filterParts}concat=n=${audibleVoicePaths.length}:v=0:a=1[out]`;
+        concatInputArgs.push('-filter_complex', concatFilter, '-map', '[out]', tempCombinedVoice);
+        runFfmpeg(concatInputArgs);
+
+        // 2. Apply sidechain compression (ducking)
+        const duckingFilter = `[1:a]asplit[sc][voice];[0:a][sc]sidechaincompress=threshold=0.03:ratio=20:attack=100:release=1000[bg];[bg][voice]amix=inputs=2:duration=first[mix]`;
+        runFfmpeg([
+            '-y',
+            '-i',
+            musicPath,
+            '-i',
+            tempCombinedVoice,
+            '-filter_complex',
+            duckingFilter,
+            '-map',
+            '[mix]',
+            '-b:a',
+            '192k',
+            outputPath,
+        ]);
+    } catch (error: any) {
+        logError(`[AUDIO-PROC] Sidechain ducking failed: ${error.message}`);
+        // Fallback: Just mix them normally if ducking fails
+        try {
+            runFfmpeg([
+                '-y',
+                '-i',
+                musicPath,
+                '-i',
+                tempCombinedVoice,
+                '-filter_complex',
+                'amix=inputs=2:duration=first',
+                '-b:a',
+                '192k',
+                outputPath,
+            ]);
+        } catch (fallbackError: any) {
+            logError(`[AUDIO-PROC] Fallback mix also failed: ${fallbackError.message}`);
+            throw fallbackError;
+        }
+    } finally {
+        if (fs.existsSync(tempCombinedVoice)) {
+            try {
+                fs.unlinkSync(tempCombinedVoice);
+            } catch {
+                /* ignore — cleanup */
+            }
+        }
+    }
+
+    return outputPath;
+}

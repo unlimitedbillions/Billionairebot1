@@ -1,0 +1,595 @@
+/**
+ * config.ts — the FULL customization surface for the agentic video system.
+ *
+ * The user said "fully control customize everything". This schema is that
+ * surface: one typed object drives style, audio, captions, sourcing, and the
+ * self-heal budget. It can be authored as JSON/YAML (loaded from a file or
+ * env), or assembled from CLI flags. Defaults = the battle-tested "cinematic"
+ * preset so the system still works with zero config.
+ *
+ * Nothing here talks to a network or an AI key — it only parameterizes the
+ * deterministic agentic backend.
+ */
+
+export type Orientation = 'portrait' | 'landscape';
+export type AspectKind = '9:16' | '1:1' | '16:9';
+export type TransitionPref =
+    | 'fade'
+    | 'slide'
+    | 'zoomblur'
+    | 'cut'
+    | 'mixed'
+    // Extended presets (map to native ffmpeg xfade kinds; unknown falls back to fade):
+    | 'dissolve'
+    | 'wipeleft'
+    | 'wiperight'
+    | 'wipeup'
+    | 'wipedown'
+    | 'circlecrop'
+    | 'smoothleft'
+    | 'smoothup'
+    | 'smoothdown'
+    | 'radial'
+    | 'zoomin'
+    | 'zoomout'
+    | 'slideup'
+    | 'slidedown'
+    | 'flash'
+    | 'glitch'
+    | 'whippan'
+    | 'morphcut'
+    | 'lightleak';
+export type GradePref = 'cinematic' | 'warm' | 'cool' | 'vivid' | 'neutral';
+export type CaptionStyle = 'burned' | 'none' | 'karaoke';
+export type VideoType = 'facts' | 'tutorial' | 'news' | 'story' | 'product' | 'motivational' | 'nature';
+export type MusicIntensity = 'calm' | 'mid' | 'energetic';
+
+/**
+ * Video-type templates — each is a partial AgenticConfig that gives a
+ * "different perspective" per genre. The user wanted "all types of video in
+ * different perspective"; this is the knob that selects the editorial voice.
+ * A template is applied ON TOP of the preset (so preset sets the baseline look,
+ * template tunes it for the genre), then explicit user overrides win last.
+ */
+export const VIDEO_TYPE_PROFILES: Record<VideoType, Partial<AgenticConfig>> = {
+    facts: {
+        kineticText: true,
+        transition: 'fade',
+        grade: 'cinematic',
+        musicIntensity: 'mid',
+        captions: 'burned',
+        hookFirst: true,
+        variablePacing: true,
+        jCutSec: 0.4,
+    },
+    tutorial: {
+        kineticText: true,
+        transition: 'slide',
+        grade: 'neutral',
+        musicIntensity: 'calm',
+        captions: 'burned',
+        sfx: true,
+        hookFirst: false,
+        variablePacing: false,
+        jCutSec: 0.2,
+    },
+    news: {
+        kineticText: false,
+        transition: 'cut',
+        grade: 'cool',
+        musicIntensity: 'mid',
+        captions: 'burned',
+        orientation: 'landscape',
+        aspect: '16:9',
+        hookFirst: false,
+        variablePacing: false,
+        jCutSec: 0.1,
+    },
+    story: {
+        kineticText: true,
+        transition: 'fade',
+        grade: 'warm',
+        musicIntensity: 'calm',
+        captions: 'burned',
+        hookFirst: true,
+        variablePacing: true,
+        jCutSec: 0.6,
+    },
+    product: {
+        kineticText: true,
+        transition: 'slide',
+        grade: 'vivid',
+        musicIntensity: 'energetic',
+        captions: 'burned',
+        sfx: true,
+        hookFirst: true,
+        variablePacing: true,
+        jCutSec: 0.3,
+    },
+    motivational: {
+        kineticText: true,
+        transition: 'zoomblur',
+        grade: 'cinematic',
+        musicIntensity: 'energetic',
+        captions: 'karaoke',
+        hookFirst: true,
+        variablePacing: true,
+        jCutSec: 0.5,
+    },
+    nature: {
+        kineticText: false,
+        transition: 'fade',
+        grade: 'cinematic',
+        musicIntensity: 'calm',
+        captions: 'burned',
+        hookFirst: false,
+        variablePacing: true,
+        jCutSec: 0.8,
+    },
+};
+
+/** Human-readable names for discovery / docs / UI dropdowns. */
+export const VIDEO_TYPE_LABELS: Record<VideoType, string> = {
+    facts: 'Facts / Educational',
+    tutorial: 'Tutorial / How-to',
+    news: 'News / Timely',
+    story: 'Story / Narrative',
+    product: 'Product / Promo',
+    motivational: 'Motivational / Quote',
+    nature: 'Nature / Ambient',
+};
+
+/**
+ * Caption theme presets — "Better subtitle styling and theme presets" from the
+ * roadmap. Each is a self-contained look the user can name instead of hand-
+ * tuning drawtext args. `fontScale` is relative to a 1080p-height baseline
+ * (1.0 ≈ readable default); `position` is vertical anchor.
+ */
+export interface CaptionTheme {
+    fontScale: number;
+    color: string;
+    bg: string | null; // backing box color (null = none)
+    outline: string;
+    bold: boolean;
+    position: 'bottom' | 'center' | 'top';
+}
+export const CAPTION_THEME_PRESETS: Record<string, CaptionTheme> = {
+    minimal: { fontScale: 1.0, color: '#FFFFFF', bg: null, outline: '#000000', bold: false, position: 'bottom' },
+    bold: { fontScale: 1.15, color: '#FFFFFF', bg: null, outline: '#000000', bold: true, position: 'bottom' },
+    highContrast: {
+        fontScale: 1.1,
+        color: '#FFFF00',
+        bg: 'rgba(0,0,0,0.55)',
+        outline: '#000000',
+        bold: true,
+        position: 'bottom',
+    },
+    softCard: {
+        fontScale: 1.0,
+        color: '#FFFFFF',
+        bg: 'rgba(0,0,0,0.45)',
+        outline: '#222222',
+        bold: false,
+        position: 'bottom',
+    },
+    centerPop: { fontScale: 1.2, color: '#FFFFFF', bg: null, outline: '#000000', bold: true, position: 'center' },
+    topTag: {
+        fontScale: 0.95,
+        color: '#FFFFFF',
+        bg: 'rgba(0,0,0,0.5)',
+        outline: '#000000',
+        bold: false,
+        position: 'top',
+    },
+};
+
+/**
+ * Video format presets — quick aspect/orientation selectors for the common
+ * social surfaces named in the roadmap (Shorts / Reels / explainers / promos).
+ */
+export interface VideoFormat {
+    orientation: Orientation;
+    aspect: AspectKind;
+}
+export const VIDEO_FORMAT_PRESETS: Record<string, VideoFormat> = {
+    shorts: { orientation: 'portrait', aspect: '9:16' },
+    reels: { orientation: 'portrait', aspect: '9:16' },
+    tiktok: { orientation: 'portrait', aspect: '9:16' },
+    square: { orientation: 'portrait', aspect: '1:1' },
+    landscape: { orientation: 'landscape', aspect: '16:9' },
+    explainer: { orientation: 'landscape', aspect: '16:9' },
+    promo: { orientation: 'portrait', aspect: '9:16' },
+};
+
+/** Resolve a caption theme name to its preset (falls back to minimal). */
+export function resolveCaptionTheme(name?: string): CaptionTheme {
+    return (name && CAPTION_THEME_PRESETS[name]) || CAPTION_THEME_PRESETS.minimal;
+}
+
+/**
+ * Pure mapping from a caption theme to the concrete ffmpeg `drawtext` style
+ * fragments used by the burned-caption renderer. Extracted so it can be unit
+ * tested without invoking ffmpeg. `baseSizePx` is the historical default (30).
+ *  - `fontcolor`: `#RRGGBB` -> `0xRRGGBB` (ffmpeg hex form)
+ *  - `fontsize`: round(baseSizePx * fontScale)
+ *  - `box`: derived from the rgba() alpha in `bg` (no box when bg is null)
+ *  - `y`: bottom -> `h-text_h-120`, center -> `(h-text_h)/2`, top -> `120`
+ */
+export function captionThemeToDrawtext(
+    theme: CaptionTheme,
+    baseSizePx = 30,
+): { fontcolor: string; fontsize: number; boxArgs: string; yExpr: string } {
+    const fontcolor = theme.color.startsWith('#') ? '0x' + theme.color.slice(1) : theme.color;
+    const fontsize = Math.round(baseSizePx * theme.fontScale);
+    let boxArgs = '';
+    if (theme.bg) {
+        const m = /rgba?\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)/.exec(theme.bg);
+        const alpha = m ? m[1] : '0.5';
+        boxArgs = `:box=1:boxcolor=black@${alpha}:boxborderw=10`;
+    }
+    const yExpr = theme.position === 'center' ? '(h-text_h)/2' : theme.position === 'top' ? '120' : 'h-text_h-120';
+    return { fontcolor, fontsize, boxArgs, yExpr };
+}
+
+/** List caption themes for discovery / UI dropdowns. */
+export function listCaptionThemes(): { id: string; label: string }[] {
+    return Object.keys(CAPTION_THEME_PRESETS).map((id) => ({ id, label: id }));
+}
+
+/** List video formats for discovery / UI dropdowns. */
+export function listFormats(): { id: string; label: string }[] {
+    return Object.keys(VIDEO_FORMAT_PRESETS).map((id) => ({ id, label: id }));
+}
+
+/** List the available template ids + labels (for CLI help / docs). */
+export function listTemplates(): { id: VideoType; label: string }[] {
+    return (Object.keys(VIDEO_TYPE_PROFILES) as VideoType[]).map((id) => ({ id, label: VIDEO_TYPE_LABELS[id] }));
+}
+
+export interface AgenticConfig {
+    /** Topic + title are the only REQUIRED inputs — everything else is optional. */
+    topic: string;
+    title?: string;
+
+    /** ── Visual style ── */
+    preset?: string; // named preset id (cinematic|reels|documentary|...)
+    orientation?: Orientation; // portrait (default) | landscape
+    aspect?: AspectKind; // 9:16 | 1:1 | 16:9
+    transition?: TransitionPref; // override per-scene transitions
+    grade?: GradePref; // override per-scene color grade
+    kineticText?: boolean; // animated lower-third / word-pop (default true)
+    kenBurns?: boolean; // gentle zoom on images (default true)
+    vignette?: boolean; // cinematic edge darkening (default true)
+
+    /** ── Audio ── */
+    sfx?: boolean; // emphasis sound effects on transitions (default false)
+    musicQuery?: string; // free-music search term
+    musicIntensity?: 'calm' | 'mid' | 'energetic'; // ducking depth
+    voice?: string; // TTS voice hint
+
+    /** ── Captions ── */
+    captions?: CaptionStyle; // burned (default) | none | karaoke
+    /** Named caption theme preset id (see CAPTION_THEME_PRESETS). Resolves to
+     *  a concrete look (font size/color/position/box) at render time. */
+    captionTheme?: string;
+    /** Named video-format preset id (see VIDEO_FORMAT_PRESETS): shortcuts the
+     *  common social surfaces — shorts/reels/tiktok (9:16), square (1:1),
+     *  landscape/explainer (16:9), promo (9:16). */
+    format?: string;
+    /** Extra languages for subtitle sidecars (Tier-1 #2). Each produces a
+     *  `<name>.<lang>.srt` next to the native SRT, translated by the agent's
+     *  own free model. Offline / no-model → sidecar still emitted (untranslated). */
+    languages?: string[]; // e.g. ['es','fr','hi','ta']
+
+    /** ── Platform tailoring (B12) ── */
+    /** When set, the agent brain tailors aspect + caption style + hook length
+     *  for the target platform (e.g. 'tiktok' | 'youtube' | 'instagram' | 'reels').
+     *  Model-driven when a free model is configured; heuristic fallback keeps
+     *  the existing preset/aspect/captions when not. */
+    platform?: 'tiktok' | 'youtube' | 'instagram' | 'reels';
+
+    /** ── Sourcing ── */
+    preferVisual?: 'image' | 'video' | 'gen' | 'video-gen';
+    /** Feature 1: when preferVisual is 'video-gen', generate AI motion clips
+     *  instead of stock video. Key-gated (VIDEO_GEN_*). Off when no key. */
+    candidatesPerAsset?: number; // assets fetched per scene (default 4)
+    videoType?: VideoType; // template selector (Phase: templates)
+    /** Use the user's OWN media from input/visuals/ instead of (or in
+     *  addition to) fetched stock. Files are distributed round-robin across
+     *  scenes; any scene without a matching local file falls back to fetching. */
+    localAssets?: string[];
+    /** Opt-in: when true (and `localAssets` is not explicitly set), the pipeline
+     *  auto-detects every media file in input/visuals/ and binds them round-robin
+     *  to scenes. Default FALSE. Previously this auto-detect ran unconditionally,
+     *  which silently hijacked EVERY stock-based job with whatever happened to sit
+     *  in input/visuals/ (e.g. a single brand_cover.jpg → every scene became that
+     *  one image). Stock acquisition is the correct default; local reuse is opt-in. */
+    autoLocalAssets?: boolean;
+    /** C6: user-supplied video clips (per-scene) used directly as scene visuals. */
+    videoClips?: string[];
+    /** C2: user-supplied voiceover audio (per-scene) used instead of TTS. */
+    personalAudio?: string[];
+    /** A user-supplied default image/video (in input/visuals/) used as a
+     *  last-resort visual when both fetch and the pool fail (legacy-style
+     *  default.mp4 fallback). */
+    defaultVisual?: string;
+    /** MOTION GRAPHICS SOURCE (code-only Remotion). When a scene resolves to a
+     *  `motion` visual, the pipeline renders a Remotion composition instead of
+     *  fetching/using an image or video. Keeps the existing `[Visual:]` stock and
+     *  user-asset paths intact — motion is an additive third source. */
+    /** Named Remotion libraries and where to find them. Key = library name
+     *  (used by `[Motion: name@library]` and `motionByScene`). Value = relative
+     *  folder under the project root containing that library's `index.ts`.
+     *  Default if omitted: `{ "creation": "remotion-creation" }`. This makes the
+     *  motion engine location-configurable at an advanced level — a composition
+     *  can live in any folder. */
+    motionLibrary?: Record<string, string>;
+    /** Per-scene composition id (or `name@library`). Overrides planner choice. */
+    motionByScene?: Record<number, string>;
+    /** AUTONOMOUS REMOTION CODEGEN (Hermes-controlled, no limits).
+     *  When true (or when a scene carries `[GenMotion:]`), the Hermes agent
+     *  authors a NEW Remotion .tsx per scene from scratch (full Remotion
+     *  capacity), renders it, vision-verifies, self-fixes, and integrates the
+     *  clip into input/visuals/ as a normal [Visual:] asset. Falls back to
+     *  stock/user asset if generation fails after `motionMaxRetries`. */
+    autonomousMotion?: boolean;
+    /** Max self-fix retries per generated scene (default 5). */
+    motionMaxRetries?: number;
+    /** Let the agent auto-classify scenes as MOTION even without a tag
+     *  (default false — explicit [GenMotion:]/[Motion:] tag required). */
+    motionAutoDecide?: boolean;
+
+    /** ── Pro-edit (human-feel) toggles ── */
+    /** Lead with the most intriguing scene instead of a flat list order. */
+    hookFirst?: boolean;
+    /** Alternate scene durations so the rhythm breathes (uniform = templated). */
+    variablePacing?: boolean;
+    /** Branded intro title card (cold-open). */
+    intro?: { title: string; subtitle?: string; durationSec?: number };
+    /** Branded outro CTA card. */
+    outro?: { ctaText: string; showSubscribe?: boolean; hashtags?: string[]; durationSec?: number };
+    /** J-cut: next scene's voiceover leads its picture by this many seconds
+     *  (audio cuts early, picture follows) — the #1 "human editor" tell. */
+    jCutSec?: number;
+
+    /** ── Advanced optional features (all OFF by default; safe to ignore) ── */
+    /** Feature 3: rewrite the opening line into a retention hook. Heuristic
+     *  always runs; if true AND an LLM is configured, the brain writes a
+     *  stronger hook (falls back to heuristic on any failure). Default false. */
+    optimizeHook?: boolean;
+    /** Feature 4A: write SEO title/description/tags. Heuristic always runs; if
+     *  true AND an LLM is configured, the brain writes stronger metadata.
+     *  Default false. */
+    seo?: boolean;
+    /** Feature 4B: generate an AI-attractive thumbnail via the image generator
+     *  (key-gated, IMAGE_GEN_*). Falls back to frame-grab when off/no key.
+     *  Default false. */
+    aiThumbnail?: boolean;
+    /** Feature 2: actually upload to YouTube via the Data API when a token is
+     *  present (YOUTUBE_ACCESS_TOKEN). When false, only the manifest + helper
+     *  script are written (never blocks the run). Default false. */
+    publishYouTube?: boolean;
+
+    /** ── Self-heal / automation ── */
+    backend?: 'agent' | 'vision';
+    maxAttempts?: number; // autopilot retry budget (default 3)
+    renderer?: 'ffmpeg' | 'remotion';
+    pruneWorkspaces?: number; // keep N workspaces (default 2)
+
+    /** ── Branding (optional) ── */
+    brand?: { watermark?: string; accent?: string };
+
+    /** ── Agent brain budget / circuit-breaker (optional) ── */
+    /** When set, caps total model calls per run and trips the breaker after
+     *  `fails` consecutive failures — pipeline falls back to heuristics. */
+    brain?: { maxCalls?: number; maxFails?: number };
+
+    /**
+     * AI visual/audio verification — OPT-IN, zero extra cost.
+     * Reuses the AGENT'S OWN running model (via AgentBrain) when that model
+     * is multimodal. No separate API key, no paid service. When disabled
+     * (default) or when the agent model has no vision / is offline, every
+     * check silently returns null and the deterministic signal gates decide.
+     * AI scores AUGMENT the signal gates (AND-ed), never replace them.
+     */
+    aiVerify?: {
+        enabled: boolean; // master toggle — DEFAULT false
+        /** Minimum confidence (0-10) for an asset to pass AI review. */
+        minConfidence?: number; // default 6
+        /** Per-stage opt-in (each independent). */
+        verifyOnAcquire?: boolean; // asset collection
+        verifyOnApprove?: boolean; // before approving each asset
+        verifyOnEdit?: boolean; // after scene edits
+        verifyOnRender?: boolean; // final rendered MP4
+        /**
+         * M8 — strength of the post-render gate.
+         *  - 'signal' (default): only structural/signal checks (X7-X15).
+         *  - 'vision': additionally sample N frames from the finished MP4 and
+         *    run AI subject/watermark/safety verification on each (fail-closed).
+         */
+        finalMode?: 'signal' | 'vision';
+        /** What to check. */
+        checkSubjectMatch?: boolean; // does media show the scene's subject? (the "lino vs forest" gap)
+        checkWatermark?: boolean; // default true
+        checkSafety?: boolean; // default true
+        /** Audio (music + voiceover) AI checks — uses the agent's own text
+         *  model on available transcripts; never blocks when none exist. */
+        checkMusicMood?: boolean; // does music match the video mood?
+        checkSpeechClarity?: boolean; // is the voiceover clear / on-topic?
+        checkBackgroundNoise?: boolean; // is background noise acceptable?
+    };
+}
+
+/** Built-in presets — each is a partial AgenticConfig the user can extend. */
+export const PRESETS: Record<string, Partial<AgenticConfig>> = {
+    cinematic: {
+        orientation: 'portrait',
+        aspect: '9:16',
+        transition: 'fade',
+        grade: 'cinematic',
+        kineticText: true,
+        kenBurns: true,
+        vignette: true,
+        captions: 'burned',
+        musicIntensity: 'mid',
+    },
+    reels: {
+        orientation: 'portrait',
+        aspect: '9:16',
+        transition: 'slide',
+        grade: 'vivid',
+        kineticText: true,
+        kenBurns: true,
+        vignette: false,
+        captions: 'burned',
+        musicIntensity: 'energetic',
+    },
+    documentary: {
+        orientation: 'landscape',
+        aspect: '16:9',
+        transition: 'fade',
+        grade: 'neutral',
+        kineticText: false,
+        kenBurns: true,
+        vignette: true,
+        captions: 'burned',
+        musicIntensity: 'calm',
+    },
+    'documentary-cool': {
+        orientation: 'landscape',
+        aspect: '16:9',
+        transition: 'fade',
+        grade: 'cool',
+        kineticText: false,
+        kenBurns: true,
+        vignette: true,
+        captions: 'burned',
+        musicIntensity: 'calm',
+    },
+    neutral: {
+        orientation: 'portrait',
+        aspect: '9:16',
+        transition: 'fade',
+        grade: 'neutral',
+        kineticText: true,
+        kenBurns: false,
+        vignette: false,
+        captions: 'burned',
+        musicIntensity: 'mid',
+    },
+};
+
+/**
+ * Resolve a user config into a fully-populated config by applying the named
+ * preset first, then user overrides. Returns a normalized config where every
+ * production knob has a concrete value.
+ */
+export function resolveConfig(input: Partial<AgenticConfig>): AgenticConfig {
+    const preset = input.preset ? (PRESETS[input.preset] ?? {}) : PRESETS.cinematic;
+    const tpl = input.videoType ? (VIDEO_TYPE_PROFILES[input.videoType] ?? {}) : {};
+    // Video-format preset (shorts/reels/square/landscape/...) sets a baseline
+    // orientation+aspect, the same way `preset` does. Explicit user overrides
+    // (in stripUndefined below) still win, so naming `format: 'shorts'` while
+    // passing `orientation: 'landscape'` keeps landscape.
+    const fmt = input.format ? VIDEO_FORMAT_PRESETS[input.format] : {};
+    const merged: AgenticConfig = {
+        topic: input.topic ?? 'untitled',
+        title: input.title ?? input.topic ?? 'untitled',
+        ...preset, // baseline look
+        ...tpl, // genre voice (on top of preset)
+        ...fmt, // format baseline (orientation/aspect)
+        ...stripUndefined(input), // explicit user overrides win
+    } as AgenticConfig;
+    // Hard defaults for anything still missing.
+    merged.orientation ??= 'portrait';
+    merged.aspect ??= '9:16';
+    merged.transition ??= 'fade';
+    merged.grade ??= 'cinematic';
+    merged.kineticText ??= true;
+    merged.kenBurns ??= true;
+    merged.vignette ??= true;
+    merged.captions ??= 'burned';
+    merged.musicIntensity ??= 'mid';
+    merged.candidatesPerAsset ??= 4;
+    merged.backend ??= 'agent';
+    merged.maxAttempts ??= 3;
+    merged.renderer ??= 'ffmpeg';
+    merged.pruneWorkspaces ??= 2;
+    // AI verification — OPT-IN, off by default. When enabled, every sub-flag
+    // defaults to the master toggle so `enabled:true` turns everything on.
+    const av = input.aiVerify;
+    if (av) {
+        merged.aiVerify = {
+            enabled: av.enabled ?? false,
+            minConfidence: av.minConfidence ?? 6,
+            verifyOnAcquire: av.verifyOnAcquire ?? av.enabled ?? false,
+            verifyOnApprove: av.verifyOnApprove ?? av.enabled ?? false,
+            verifyOnEdit: av.verifyOnEdit ?? av.enabled ?? false,
+            verifyOnRender: av.verifyOnRender ?? av.enabled ?? false,
+            checkSubjectMatch: av.checkSubjectMatch ?? true,
+            checkWatermark: av.checkWatermark ?? true,
+            checkSafety: av.checkSafety ?? true,
+            checkMusicMood: av.checkMusicMood ?? av.enabled ?? false,
+            checkSpeechClarity: av.checkSpeechClarity ?? av.enabled ?? false,
+            checkBackgroundNoise: av.checkBackgroundNoise ?? av.enabled ?? false,
+        };
+    }
+    // Pro-edit (human-feel) defaults — free, rule-based, on by default.
+    merged.hookFirst ??= true;
+    merged.variablePacing ??= true;
+    merged.jCutSec ??= 0.4;
+    return merged;
+}
+
+function stripUndefined<T extends object>(o: T): Partial<T> {
+    const out: Partial<T> = {};
+    for (const k of Object.keys(o) as (keyof T)[]) {
+        if (o[k] !== undefined) out[k] = o[k];
+    }
+    return out;
+}
+
+/**
+ * Load a config from a JSON file (path) or fall back to env-derived defaults.
+ * The file may be a full AgenticConfig or { preset, ...overrides }.
+ */
+export function loadConfig(path?: string): Partial<AgenticConfig> {
+    if (path) {
+        const fs = require('fs');
+        const raw = fs.readFileSync(path, 'utf8');
+        return JSON.parse(raw) as Partial<AgenticConfig>;
+    }
+    return {};
+}
+
+/** Convert a resolved config into the PipelineRequest + render opts the engine uses. */
+export function configToRequest(cfg: AgenticConfig) {
+    return {
+        req: {
+            topic: cfg.topic,
+            title: cfg.title ?? cfg.topic,
+            backend: cfg.backend,
+            preferVisual: cfg.preferVisual,
+            candidatesPerAsset: cfg.candidatesPerAsset,
+            orientation: cfg.orientation,
+            voice: cfg.voice,
+            musicQuery: cfg.musicQuery,
+            localAssets: cfg.localAssets,
+            defaultVisual: cfg.defaultVisual,
+        } as import('./orchestrate.js').PipelineRequest,
+        render: {
+            preset: cfg.preset ?? 'cinematic',
+            sfx: cfg.sfx,
+            kinetic: cfg.kineticText,
+            crossfadeSec: 0.5,
+            captions: cfg.captions,
+            captionTheme: cfg.captionTheme,
+        },
+        autopilot: {
+            renderer: cfg.renderer,
+            preset: cfg.preset ?? 'cinematic',
+            sfx: cfg.sfx,
+            maxAttempts: cfg.maxAttempts,
+        },
+    };
+}

@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+        "automated-video-generator": {
+            "command": "npx",
+            "args": ["-y", "tsx", "${workspaceFolder}/src/mcp-server.ts"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "AUTOMATED_VIDEO_GENERATOR_MCP": "1"
+            }
+        }
+    }
+}

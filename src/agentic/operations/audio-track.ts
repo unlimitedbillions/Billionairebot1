@@ -1,0 +1,140 @@
+/**
+ * audio-track.ts — add a music or audio track to an EXISTING video (single task).
+ *
+ * Reuses the project's resolveFreeBackgroundMusic (free CC tracks, zero-cost) and
+ * applyAutoDucking so voice (if any) stays audible under music. When no music
+ * query resolves, falls back to silent (still muxes the original video audio).
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import { runFfmpeg } from './edit.js';
+import { resolveFreeBackgroundMusic } from '../../lib/free-music.js';
+import { inputBgmPath } from '../../lib/path-safety.js';
+import { applyAutoDucking } from '../../lib/audio-processor.js';
+// @ts-expect-error - ffprobe-static/ffmpeg-static have no type declarations
+import ffprobe from 'ffprobe-static';
+
+export interface AudioTrackResult {
+    ok: boolean;
+    output?: string;
+    detail: string;
+    usedMusic: boolean;
+}
+
+/** True when the file contains at least one audio stream. */
+function audioStreamPresent(file: string): boolean {
+    if (!fs.existsSync(file)) return false;
+    try {
+        const cmd: string = (ffprobe as any)?.path ?? (ffprobe as unknown as string);
+        const { execFileSync } = require('child_process');
+        const out = execFileSync(cmd, ['-v', 'quiet', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', file]).toString();
+        return out.split('\n').some((l: string) => l.trim() === 'audio');
+    } catch {
+        return false;
+    }
+}
+
+/** Add a free background music track under a video. */
+export async function addMusic(file: string, query = 'ambient lofi', out?: string): Promise<AudioTrackResult> {
+    if (!fs.existsSync(file))
+        return { ok: false, output: undefined, detail: `video not found: ${file}`, usedMusic: false };
+    const output = out ?? path.join(process.cwd(), 'output', `with_music_${Date.now()}.mp4`);
+    fs.mkdirSync(path.dirname(output), { recursive: true });
+
+    let musicPath = '';
+    try {
+        const m = await resolveFreeBackgroundMusic({ query, enabled: true });
+        musicPath = m?.localPath && fs.existsSync(m.localPath) ? m.localPath : '';
+    } catch {
+        musicPath = '';
+    }
+    if (!musicPath) {
+        const fallback = [inputBgmPath('twenty_minutes.mp3'), inputBgmPath('two_minutes.mp3')].find((p) =>
+            fs.existsSync(p),
+        );
+        musicPath = fallback ?? '';
+    }
+
+    if (!musicPath) {
+        // No music available: just pass the video through (keeps original audio).
+        const { code } = await runFfmpeg(['-i', file, '-c', 'copy', '-y', output]);
+        return {
+            ok: code === 0 && fs.existsSync(output),
+            output: code === 0 ? output : undefined,
+            detail: 'no free music found; passed video through unchanged',
+            usedMusic: false,
+        };
+    }
+
+    // Duck the music under any voice in the video, then mux.
+    const ducked = await applyAutoDucking(musicPath, [file], path.dirname(output)).catch(() => musicPath);
+    const { code, out: log } = await runFfmpeg([
+        '-i',
+        file,
+        '-i',
+        ducked,
+        '-filter_complex',
+        '[1:a]volume=0.35[a]',
+        '-map',
+        '0:v',
+        '-map',
+        '[a]',
+        '-c:v',
+        'copy',
+        '-c:a',
+        'aac',
+        '-shortest',
+        '-y',
+        output,
+    ]);
+    if (code !== 0)
+        return { ok: false, output: undefined, detail: `mux failed:\n${log.slice(-600)}`, usedMusic: false };
+    if (!fs.existsSync(output))
+        return { ok: false, output: undefined, detail: 'output not produced', usedMusic: false };
+    return { ok: true, output, detail: `added music (${query}) under ${file}`, usedMusic: true };
+}
+
+/** Mux a user-supplied audio file (voiceover/narration) onto a video. */
+export async function addAudioTrack(
+    file: string,
+    audioFile: string,
+    out?: string,
+    audioVolume = 1.0,
+): Promise<AudioTrackResult> {
+    if (!fs.existsSync(file))
+        return { ok: false, output: undefined, detail: `video not found: ${file}`, usedMusic: false };
+    if (!fs.existsSync(audioFile))
+        return { ok: false, output: undefined, detail: `audio not found: ${audioFile}`, usedMusic: false };
+    const output = out ?? path.join(process.cwd(), 'output', `with_audio_${Date.now()}.mp4`);
+    fs.mkdirSync(path.dirname(output), { recursive: true });
+    const { code, out: log } = await runFfmpeg([
+        '-i',
+        file,
+        '-i',
+        audioFile,
+        '-filter_complex',
+        `[1:a]volume=${audioVolume}[a]`,
+        '-map',
+        '0:v',
+        '-map',
+        '[a]',
+        '-c:v',
+        'copy',
+        '-c:a',
+        'aac',
+        '-shortest',
+        '-y',
+        output,
+    ]);
+    if (code !== 0)
+        return { ok: false, output: undefined, detail: `mux failed:\n${log.slice(-600)}`, usedMusic: false };
+    if (!fs.existsSync(output))
+        return { ok: false, output: undefined, detail: 'output not produced', usedMusic: false };
+    // Validate that the audio actually made it into the output. A silent or
+    // audio-less source can make ffmpeg silently drop the [1:a] mapping while
+    // still exiting 0 — never report ok:true for a video that lost its audio.
+    if (!audioStreamPresent(output))
+        return { ok: false, output: undefined, detail: `audio track missing in output (source ${audioFile} produced no usable audio)`, usedMusic: false };
+    return { ok: true, output, detail: `muxed ${audioFile} onto ${file}`, usedMusic: false };
+}
