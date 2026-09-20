@@ -3,12 +3,23 @@
 youtube_oauth.py — YouTube link + PRIVATE uploads + 1-week public expiry.
 
 Subcommands:
-  link     One-time OAuth in browser -> creates token.json (run on phone/PC)
+  link     One-time OAuth -> creates token.json (works on PC AND Termux/Android)
   upload   Upload rendered videos as PRIVATE (--file jobs.json | --queue q.json | --video x.mp4)
   public   Make a video public (--id ID | --latest)
   private  Make a video private again (--id ID | --all)
   expire   Auto-private anything public for >= N days (cron-safe, exit 0)
   list     Show local upload log
+
+Flows:
+  * Desktop  -> automatic browser redirect (localhost:8642).
+  * Termux   -> manual flow: open the printed URL, approve, then paste the
+                FULL redirect URL from the address bar back into the terminal
+                (the page may show "site can't be reached" — that is expected).
+  * CI/headless -> never opens a browser; loads token.json from YT_TOKEN_B64.
+
+CRITICAL: set the OAuth consent screen to "In production" BEFORE running `link`,
+otherwise Google issues a refresh token that expires after 7 days and CI uploads
+start failing with invalid_grant. The script warns you if refresh_token is missing.
 
 CI usage: set secrets YT_CLIENT_SECRETS_B64 and YT_TOKEN_B64 (base64 of the two JSON files).
 """
@@ -23,7 +34,7 @@ LOG = DATA / "yt_uploads.json"
 TOKEN = ROOT / "token.json"
 SECRETS = ROOT / "client_secrets.json"
 SCOPES = ["https://www.googleapis.com/auth/youtube"]
-OAUTH_PORT = 8642  # add http://localhost:8642/ to Google Console redirect URIs
+OAUTH_PORT = 8642  # add http://localhost:8642/ (trailing slash) to Google Console redirect URIs
 
 
 def now():
@@ -53,6 +64,28 @@ def _b64_env(name, dest: Path):
         dest.write_bytes(base64.b64decode(val))
 
 
+def _is_termux():
+    pfx = os.environ.get("PREFIX", "")
+    return bool(os.environ.get("TERMUX_VERSION")) or "/data/data/com.termux" in pfx
+
+
+def _manual_auth(flow):
+    """Browser-redirect-free flow for mobile/Termux. Returns credentials."""
+    uri, _state = flow.authorization_url(access_type="offline", prompt="consent")
+    print("\n[yt] === MANUAL AUTHORIZATION (mobile / Termux) ===")
+    print("[yt] 1) Open this URL in your phone browser:\n")
+    print(uri)
+    print("\n[yt] 2) Sign in + Approve. The browser will then try to load a localhost")
+    print("[yt]    URL and will likely show 'This site can't be reached' — EXPECTED.")
+    print("[yt] 3) COPY THE ENTIRE URL from the address bar (it contains ?code=...&state=...)")
+    print("[yt]    and paste it below, then press Enter.\n")
+    redirect = input("[yt] Redirect URL> ").strip()
+    if not redirect:
+        sys.exit("[yt] No redirect URL provided; aborting link.")
+    flow.fetch_token(authorization_response=redirect)
+    return flow.credentials
+
+
 def get_service():
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
@@ -73,9 +106,24 @@ def get_service():
             if not SECRETS.exists():
                 sys.exit("MISSING client_secrets.json (or YT_CLIENT_SECRETS_B64). Download from Google Cloud Console.")
             flow = InstalledAppFlow.from_client_secrets_file(str(SECRETS), SCOPES)
-            creds = flow.run_local_server(port=OAUTH_PORT, prompt="consent", access_type="offline")
+            if _is_termux():
+                creds = _manual_auth(flow)
+            else:
+                try:
+                    creds = flow.run_local_server(port=OAUTH_PORT, prompt="consent", access_type="offline")
+                except (Exception, KeyboardInterrupt) as e:
+                    print(f"\n[yt] local-server flow did not complete ({type(e).__name__}: {e}); switching to manual...")
+                    creds = _manual_auth(flow)
             TOKEN.write_text(creds.to_json())
-            print("[yt] Linked! token.json created. Keep it secret.")
+            print("[yt] Linked! token.json created. Keep it secret (it is in .gitignore).")
+            tok = json.loads(TOKEN.read_text())
+            if "refresh_token" not in tok:
+                print("[yt] *** WARNING: token.json has NO refresh_token. ***")
+                print("[yt] CI uploads will fail once the short access token expires.")
+                print("[yt] Fix: set the OAuth consent screen to 'In production' (not Testing),")
+                print("[yt]      then delete token.json and re-run: python tools/youtube_oauth.py link")
+                sys.exit(2)
+            print("[yt] OK: refresh_token present. CI can upload headlessly, indefinitely.")
     return build("youtube", "v3", credentials=creds)
 
 
@@ -122,8 +170,6 @@ def cmd_upload(args):
     yt = get_service()
     entries = load_log()
     known_jobs = {e["job_id"] for e in entries}
-    known_videos = {e.get("video_id") for e in entries}
-
     jobs = []
     if args.video:
         jobs = [{"id": Path(args.video).stem, "title": args.title or Path(args.video).stem,
@@ -203,7 +249,7 @@ def cmd_expire(args):
         if privacy == "public":
             if not e.get("observed_public_at"):
                 e["observed_public_at"] = now()  # first time seen public (even if set manually in Studio)
-                print(f"[yt] {e['video_id']}: observed public, 7-day clock started.")
+                print(f"[yt] {e['video_id']}: observed public, {args.days}-day clock started.")
             elif parse_dt(e["observed_public_at"]) <= datetime.now(timezone.utc) - timedelta(days=args.days):
                 _set_privacy(yt, e["video_id"], "private")
                 e["status"] = "private"; e["expired_at"] = now(); e["observed_public_at"] = None
