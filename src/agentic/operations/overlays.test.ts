@@ -1,0 +1,61 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { buildOverlayPlan, resolveCaptionTheme, CAPTION_THEMES } from './overlays';
+
+test('captionTheme resolves a preset and overrides fontColor', () => {
+    const p = buildOverlayPlan({ captionTheme: 'neon', fontColor: 'white' });
+    assert.equal(p.font.color, CAPTION_THEMES.neon.color); // 0x39ff14
+    assert.equal(p.font.weight, 800);
+    assert.equal(p.font.shadow, true);
+    assert.equal(p.captionTheme, 'neon');
+});
+
+test('unknown captionTheme falls back to default (no crash)', () => {
+    const p = buildOverlayPlan({ captionTheme: 'does-not-exist' });
+    assert.equal(p.font.color, CAPTION_THEMES.default.color);
+});
+
+test('explicit fontColor wins when no captionTheme', () => {
+    const p = buildOverlayPlan({ fontColor: 'yellow', fontWeight: 900 });
+    assert.equal(p.font.color, 'yellow');
+    assert.equal(p.font.weight, 900);
+});
+
+test('resolveCaptionTheme returns default for undefined', () => {
+    assert.deepEqual(resolveCaptionTheme(undefined), CAPTION_THEMES.default);
+    assert.equal(resolveCaptionTheme('BOLD').weight, 800);
+});
+
+test('outro end-card flows through buildOverlayPlan (ctaText spelling)', () => {
+    const p = buildOverlayPlan({
+        outro: { ctaText: 'Follow for daily tips', showSubscribe: true, hashtags: ['#fitness', '#health'], durationSec: 3 },
+    });
+    // Field name must match the JSON job spec ('ctaText'), else the
+    // reader gets undefined and the whole end-card silently vanishes.
+    assert.ok(p.outro, 'outro present');
+    assert.equal(p.outro!.ctaText, 'Follow for daily tips');
+    assert.equal(p.outro!.showSubscribe, true);
+    assert.deepEqual(p.outro!.hashtags, ['#fitness', '#health']);
+});
+
+test('brand.accent tints captions when no theme/fontColor set', () => {
+    // Wave K: brand.accent was declared but never consumed by the ffmpeg
+    // renderer, so a brand color silently did nothing. Now it tints text.
+    const p = buildOverlayPlan({ brand: { accent: '#FF6B35' } });
+    assert.equal(p.font.color, '#FF6B35');
+});
+
+test('brand.accent is overridden by explicit fontColor', () => {
+    const p = buildOverlayPlan({ brand: { accent: '#FF6B35' }, fontColor: 'yellow' });
+    assert.equal(p.font.color, 'yellow');
+});
+
+test('brand.accent is overridden by captionTheme', () => {
+    const p = buildOverlayPlan({ brand: { accent: '#FF6B35' }, captionTheme: 'neon' });
+    assert.equal(p.font.color, CAPTION_THEMES.neon.color);
+});
+
+test('without accent/theme/fontColor, falls back to theme default', () => {
+    const p = buildOverlayPlan({});
+    assert.equal(p.font.color, CAPTION_THEMES.default.color);
+});

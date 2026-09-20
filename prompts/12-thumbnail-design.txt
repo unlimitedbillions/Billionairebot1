@@ -1,0 +1,12 @@
+THUMBNAIL & POSTER DESIGN SYSTEM (CATCHY / HIGH-CTR)
+=====================================================
+1. FACE FIRST: billionaire's face occupies 40-60% of frame, eyes on upper third line.
+2. MAX 5 WORDS of text, split into 2 lines, ALL CAPS, ultra-bold.
+3. CONTRAST WAR: dark gradient behind text; text pure white with heavy black stroke.
+4. ONE accent color only (yellow #FFD400 = money, red #FF3B3B = danger/crash, orange #FF9F0A = rise).
+5. Accent underline bar above the headline (brand signature on every thumbnail).
+6. Emotion on the face or scene: shock, grit, or triumph — never neutral.
+7. Grade: +contrast, +saturation, slight vignette. Cinematic, not flat.
+8. 9:16 thumb = 1080x1920. 16:9 thumb = 1280x720. Poster = 1080x1350 (4:5).
+9. Small channel tag at top: "UNTOLD BILLIONAIRES" in a semi-transparent black box.
+10. Readable at 120px wide — if not, remove words.

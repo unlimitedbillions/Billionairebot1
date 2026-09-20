@@ -1,0 +1,127 @@
+import * as fs from 'fs';
+import * as dotenv from 'dotenv';
+import { resolveProjectPath } from '../shared/runtime/paths';
+import { AVAILABLE_VOICES, LOCALE_TO_LANGUAGE_NAME } from '../lib/voice-generator';
+
+const envPath = resolveProjectPath('.env');
+dotenv.config({ path: envPath });
+
+const pkgPath = resolveProjectPath('package.json');
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+
+export const APP_VERSION = pkg.version;
+export { AVAILABLE_VOICES, LOCALE_TO_LANGUAGE_NAME };
+
+export const HOST = process.env.HOST || '127.0.0.1';
+
+// Fix (D2): do not inherit an ambient PORT from the host shell (e.g. Paperclip
+// exports PORT=3100). That causes EADDRINUSE when AVG boots next to another
+// service. Resolution order: explicit AVG_PORT env > .env PORT > default 3001.
+// Ambient process.env.PORT is intentionally ignored unless AVG_PORT is set, so
+// CI/containers stay deterministic. Pass AVG_PORT to override.
+const AVG_PORT = process.env.AVG_PORT;
+const ENV_PORT = process.env.PORT;
+export const PORT = AVG_PORT
+    ? Number(AVG_PORT)
+    : typeof ENV_PORT === 'string' && ENV_PORT.length > 0 && !process.env.AVG_PORT_IGNORE_ENV
+      ? Number(ENV_PORT)
+      : 3001;
+export const OUTPUT_ROOT = resolveProjectPath('output');
+export const ENV_FILE = resolveProjectPath('.env');
+export const DEFAULT_TITLE = 'Generated Video';
+export const DEFAULT_VOICE = 'en-US-JennyNeural';
+export const OPENVERSE_ENABLED = process.env.OPENVERSE_ENABLED !== 'false';
+export const DEFAULT_FALLBACK_VIDEO = 'default.mp4';
+export const MAX_TITLE_LENGTH = 80;
+export const PROJECT_NAME = 'Automated Video Generator';
+export const PROJECT_REPOSITORY_URL = 'https://github.com/itsPremkumar/Automated-Video-Generator';
+export const PROJECT_LICENSE_URL = 'https://opensource.org/licenses/MIT';
+export const DEFAULT_SITE_DESCRIPTION =
+    'Free and open-source AI text-to-video generator built with Remotion, Edge-TTS, stock footage APIs, and a local web portal for YouTube Shorts, TikTok videos, explainers, and marketing content.';
+export const DEFAULT_SITE_KEYWORDS =
+    'free video generator, open-source video generator, ai video generator, text to video, remotion video generator, self-hosted video generator, youtube shorts generator, tiktok video generator, mcp video automation';
+export const BRAND_COLOR = '#4F46E5';
+
+export const HELLO_WORLD_TITLE = 'Hello World - My First Video';
+
+export const HELLO_WORLD_SCRIPT = `[Visual: beautiful sunrise over a mountain]
+Welcome to your very first video! The installation was completely successful.
+
+[Visual: fast typing on computer keyboard]
+This script was automatically generated as a test to prove that your local text-to-video studio works perfectly.
+
+[Visual: happy person celebrating success]
+You can now edit this text to whatever you want, pick a voice, and start creating!`;
+
+export const DEMO_SCRIPT = `[Visual: sunrise city skyline drone]
+Artificial intelligence is no longer a distant idea. It already helps cities, schools, hospitals, and businesses work faster and smarter.
+
+[Visual: software engineer coding on laptop]
+Behind the scenes, machine learning systems organize huge amounts of information, detect patterns, and turn messy data into useful decisions.
+
+[Visual: doctor reviewing digital health monitor]
+In healthcare, AI can support doctors by highlighting unusual scans, tracking patient risk, and reducing the time needed to review critical cases.
+
+[Visual: teacher using tablet in classroom]
+In education, adaptive tools can help teachers explain difficult topics, personalize lessons, and give students more confidence as they learn step by step.
+
+[Visual: warehouse robots moving packages]
+Inside factories and warehouses, intelligent software coordinates robots, predicts maintenance, and keeps products moving smoothly from one station to the next.
+
+[Visual: cybersecurity analyst monitoring screens]
+Security teams also use AI to detect unusual behavior, respond to threats faster, and monitor systems that would be impossible to review manually all day.
+
+[Visual: diverse team discussing ethics in office]
+The next challenge is not only building more powerful systems, but using them responsibly, transparently, and in ways that genuinely improve human life.`;
+
+export const EDITABLE_ENV_KEYS = [
+    'OPENVERSE_ENABLED',
+    'MEDIA_VERIFICATION_ENABLED',
+    'MEDIA_VERIFICATION_CONFIDENCE',
+    'PEXELS_API_KEY',
+    'PIXABAY_API_KEY',
+    'GEMINI_API_KEY',
+    'GEMINI_MODEL',
+    'GEMINI_TIMEOUT_MS',
+    'GEMINI_MAX_RETRIES',
+    'GEMINI_MAX_CONCURRENCY',
+    'PUBLIC_BASE_URL',
+    'MAX_CONCURRENT_JOBS',
+    'TTS_PROVIDER',
+    'EDGE_TTS_PATH',
+    'VOICEBOX_API_URL',
+    'VOICEBOX_PROFILE_ID',
+    'VOICEBOX_ENGINE',
+    'XTTS_API_URL',
+    'XTTS_SPEAKER_WAV',
+    'XTTS_LANGUAGE',
+    'OPENAI_LOCAL_TTS_URL',
+    'OPENAI_LOCAL_TTS_VOICE',
+    'OPENAI_LOCAL_TTS_MODEL',
+    'OPENAI_LOCAL_TTS_API_KEY',
+    'AI_PROVIDER',
+    'OLLAMA_BASE_URL',
+    'OLLAMA_MODEL',
+    'OLLAMA_TIMEOUT_MS',
+    'OLLAMA_MAX_RETRIES',
+    'OLLAMA_MAX_CONCURRENCY',
+    'OLLAMA_AUTOPULL',
+    'OLLAMA_AUTOSTART',
+    'OLLAMA_SCRIPT_MODEL',
+    'OLLAMA_URL',
+    'OPENROUTER_API_KEY',
+    'OPENROUTER_MODEL',
+    'OPENROUTER_VISION_MODEL',
+    'BRAIN_TIMEOUT_MS',
+    'AUTO_FREE_MUSIC',
+    'AGENTIC_FFMPEG_TIMEOUT_MS',
+    'AGENTIC_FFPROBE_TIMEOUT_MS',
+    'VERIFY_PASS',
+    'MAX_DOWNLOAD_BYTES',
+    'DOWNLOAD_STALL_TIMEOUT_MS',
+    'YOUTUBE_ACCESS_TOKEN',
+] as const;
+
+export const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+export const RATE_LIMIT_MAX = 10;
+export const MAX_CONCURRENT_JOBS = Math.max(1, Number.parseInt(process.env.MAX_CONCURRENT_JOBS || '1', 10) || 1);

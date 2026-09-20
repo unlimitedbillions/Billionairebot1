@@ -1,0 +1,95 @@
+name: Release
+
+on:
+    push:
+        tags:
+            - 'v*'
+
+permissions:
+    contents: write
+    packages: write
+
+jobs:
+    release:
+        name: Create Release
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+
+            - uses: actions/setup-node@v5
+              with:
+                  node-version: 22
+                  cache: npm
+                  registry-url: 'https://registry.npmjs.org'
+
+            - run: npm ci
+
+            - name: Generate changelog
+              id: changelog
+              run: |
+                  echo "## Release ${{ github.ref_name }}" > release-notes.md
+                  echo "" >> release-notes.md
+                  git log --oneline --no-decorate $(git tag --sort=-creatordate | head -n 1)..HEAD 2>/dev/null | sed 's/^/- /' >> release-notes.md || true
+
+            - name: Check if release already exists
+              id: release_check
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  if gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+                      echo "exists=true" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "exists=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Create GitHub Release
+              if: steps.release_check.outputs.exists == 'false'
+              uses: softprops/action-gh-release@v2
+              with:
+                  body_path: release-notes.md
+                  generate_release_notes: true
+                  draft: true
+                  prerelease: ${{ contains(github.ref_name, '-') }}
+
+            - name: Publish to NPM
+              if: ${{ !contains(github.ref_name, '-') }}
+              run: |
+                  if [ -z "$NODE_AUTH_TOKEN" ]; then
+                      echo "::warning::NPM_TOKEN secret not set - skipping npm publish."
+                      exit 0
+                  fi
+                  npm publish
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+    docker:
+        name: Docker Release
+        runs-on: ubuntu-latest
+        if: ${{ !contains(github.ref_name, '-') }}
+        steps:
+            - uses: actions/checkout@v5
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v4
+
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v4
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Compute lowercase image repository
+              id: image
+              run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+            - name: Build and push Docker image
+              uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  push: true
+                  tags: |
+                      ghcr.io/${{ steps.image.outputs.name }}:${{ github.ref_name }}
+                      ghcr.io/${{ steps.image.outputs.name }}:latest

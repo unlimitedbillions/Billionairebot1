@@ -1,0 +1,6 @@
+{
+  "musk-2008-short":  { "line1": "BROKE IN 2008",   "line2": "RICHEST TODAY",    "accent": "FFD400", "tag": "UNTOLD BILLIONAIRES" },
+  "musk-2008-long":   { "line1": "FIRED, BROKE,",   "line2": "THEN UNSTOPPABLE", "accent": "FF3B3B", "tag": "FULL STORY" },
+  "bezos-garage-short": { "line1": "A GARAGE",      "line2": "WORTH TRILLIONS",  "accent": "FF9F0A", "tag": "UNTOLD BILLIONAIRES" },
+  "bezos-garage-long":  { "line1": "MOCKED FOR",    "line2": "20 YEARS",         "accent": "FFD400", "tag": "FULL STORY" }
+}

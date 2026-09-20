@@ -1,0 +1,91 @@
+name: Billionaire Stories — Shorts + Long (Mon/Wed/Sat @ 08:00 & 16:00 UTC)
+
+on:
+  schedule:
+    - cron: "0 8,16 * * 1,3,6"   # 8 AM and 4 PM UTC on Monday, Wednesday, Saturday
+  workflow_dispatch:             # manual run button
+
+permissions:
+  contents: write                # bot commits publish/privacy logs back
+
+concurrency:
+  group: billionaire-stories
+  cancel-in-progress: false
+
+jobs:
+  produce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Python (YouTube OAuth uploader)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: System deps (ffmpeg + bold font for thumbnails)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: Install Node dependencies
+        run: npm ci || npm install
+
+      - name: Install Python dependencies (YouTube OAuth)
+        run: pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
+
+      - name: Render shorts (9:16) + longform (16:9) — cinematic, posters, contact sheets
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: npm run agentic:batch -- --file input/scripts/billionaire-stories.json
+
+      - name: Duration gate (shorts 45-59s / long 2min+)
+        run: node scripts/verify-durations.mjs --file input/scripts/billionaire-stories.json
+
+      - name: Catchy thumbnails + posters (FFmpeg design system)
+        run: node scripts/make-thumbnails.mjs
+
+      - name: Upload to YouTube as PRIVATE (thumbnails included)
+        env:
+          YT_TOKEN_B64: ${{ secrets.YT_TOKEN_B64 }}
+          YT_CLIENT_SECRETS_B64: ${{ secrets.YT_CLIENT_SECRETS_B64 }}
+        run: python tools/youtube_oauth.py upload --file input/scripts/billionaire-stories.json
+
+      - name: Publish TikTok only if authed (never fails the pipeline)
+        env:
+          UPLOAD_POST_ENABLED: "true"
+          UPLOAD_POST_API_KEY: ${{ secrets.UPLOAD_POST_API_KEY }}
+          UPLOAD_POST_USERNAME: ${{ secrets.UPLOAD_POST_USERNAME }}
+          UPLOAD_POST_PLATFORMS: tiktok
+          TIKTOK_SESSION_ID: ${{ secrets.TIKTOK_SESSION_ID }}
+        run: node scripts/publish-safe.mjs --file input/scripts/billionaire-stories.json
+
+      - name: Commit histories (publish log + YouTube privacy log)
+        if: always()
+        run: |
+          git config user.name "billionaire-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add data/published.json data/yt_uploads.json || true
+          git diff --cached --quiet || git commit -m "chore: update publish + privacy logs [skip ci]"
+          git push || echo "history push skipped"
+
+      - name: Upload artifacts (videos, thumbs, posters) for phone review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: billionaire-pack-${{ github.run_number }}
+          retention-days: 7
+          path: |
+            output/**/*.mp4
+            output/**/thumb_*.jpg
+            output/**/poster*.jpg

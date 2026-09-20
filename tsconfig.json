@@ -1,0 +1,19 @@
+{
+    "compilerOptions": {
+        "target": "ES2022",
+        "module": "NodeNext",
+        "moduleResolution": "NodeNext",
+        "lib": ["ES2022", "DOM", "DOM.Iterable"],
+        "outDir": "./dist",
+        "strict": true,
+        "noImplicitReturns": true,
+        "noFallthroughCasesInSwitch": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "resolveJsonModule": true,
+        "jsx": "react"
+    },
+    "include": ["src/**/*.ts", "src/**/*.tsx", "remotion/**/*.ts", "remotion/**/*.tsx", "tests/**/*.ts"],
+    "exclude": ["node_modules", "dist", "dist-electron", "remotion/_study"]
+}

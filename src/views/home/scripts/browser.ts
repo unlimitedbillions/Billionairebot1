@@ -1,0 +1,267 @@
+export function browserLogic(): string {
+    return `
+// ─── File Browser Modal Logic ───────────────────────────────────────────────────
+
+let currentBrowserType = 'media';
+let currentParentPath = '';
+
+function openSystemBrowser(type) {
+    console.log('Opening browser for:', type);
+    currentBrowserType = type;
+    if (browserModal) {
+        browserModal.classList.add('open');
+        loadSidebar();
+        loadPath(currentParentPath || '');
+    } else {
+        console.error('browserModal element not found');
+    }
+}
+
+function closeSystemBrowser() {
+    if (browserModal) browserModal.classList.remove('open');
+}
+
+// Export to window for access if needed, though we use listeners here
+window.openSystemBrowser = openSystemBrowser;
+window.closeSystemBrowser = closeSystemBrowser;
+
+// Attach main triggers
+addMediaBtn?.addEventListener('click', () => openSystemBrowser('media'));
+browsePersonalAudioBtn?.addEventListener('click', () => openSystemBrowser('personalAudio'));
+browseMusicBtn?.addEventListener('click', () => openSystemBrowser('music'));
+
+browserUpBtn?.addEventListener('click', () => loadPath(currentParentPath));
+browserCloseBtn?.addEventListener('click', () => closeSystemBrowser());
+browserCancelBtn?.addEventListener('click', () => closeSystemBrowser());
+browserGoBtn?.addEventListener('click', () => loadPath(browserPath.value));
+
+browserPath?.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') loadPath(e.target.value);
+});
+
+// Event Delegation for Sidebar
+[quickAccessList, drivesList].forEach(list => {
+    list?.addEventListener('click', (e) => {
+        const item = e.target.closest('.sidebar-item');
+        if (item && item.dataset.path) {
+            loadPath(item.dataset.path);
+        }
+    });
+});
+
+// Event Delegation for Browser List (Selection & Navigation)
+browserList?.addEventListener('click', (e) => {
+    const item = e.target.closest('.browser-item');
+    if (!item || item.classList.contains('disabled')) return;
+    
+    const path = item.dataset.path;
+    const isDir = item.dataset.isDir === 'true';
+    
+    if (isDir) {
+        loadPath(path);
+    } else {
+        pickFile(path);
+    }
+});
+
+// Video Hover Playback
+browserList?.addEventListener('mouseover', (e) => {
+    const video = e.target.closest('video.browser-preview');
+    if (video) video.play().catch(() => {});
+});
+browserList?.addEventListener('mouseout', (e) => {
+    const video = e.target.closest('video.browser-preview');
+    if (video) {
+        video.pause();
+        video.currentTime = 0;
+    }
+});
+
+async function loadSidebar() {
+    try {
+        const homeRes = await fetch('/api/fs/home');
+        const homeJson = await homeRes.json();
+        if (homeJson.success) {
+            const h = homeJson.data;
+            const items = [
+                { name: 'Home', path: h.home, icon: '🏠' },
+                { name: 'Desktop', path: h.desktop, icon: '🖥️' },
+                { name: 'Downloads', path: h.downloads, icon: '⬇️' },
+                { name: 'Videos', path: h.videos, icon: '🎬' },
+                { name: 'Pictures', path: h.pictures, icon: '🖼️' }
+            ];
+            if (quickAccessList) {
+                quickAccessList.innerHTML = items.map(i => 
+                    '<div class="sidebar-item" data-path="' + i.path + '"><span>' + i.icon + '</span> ' + i.name + '</div>'
+                ).join('');
+            }
+        }
+
+        const drivesRes = await fetch('/api/fs/drives');
+        const drivesJson = await drivesRes.json();
+        if (drivesJson.success && drivesList) {
+            drivesList.innerHTML = '';
+            (drivesJson.data || []).forEach((d: string) => {
+                const el = document.createElement('div');
+                el.className = 'sidebar-item';
+                el.dataset.path = d;
+                el.innerHTML = '<span>💽</span> ';
+                el.appendChild(document.createTextNode(d + ' Drive'));
+                drivesList.appendChild(el);
+            });
+        }
+    } catch (e) {
+        console.error('Sidebar load failed', e);
+    }
+}
+
+async function loadPath(path = '') {
+    if (!browserList) return;
+    browserList.innerHTML = '<div class="muted" style="padding:20px">Loading...</div>';
+    try {
+        const res = await fetch('/api/fs/ls?path=' + encodeURIComponent(path));
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+
+        const data = json.data;
+        if (browserPath) browserPath.value = data.currentPath;
+        currentParentPath = data.parentPath;
+        browserList.innerHTML = '';
+
+        if (data.items.length === 0) {
+            browserList.innerHTML = '<div class="empty-state" style="margin:20px"><p class="muted">This folder is empty.</p></div>';
+            return;
+        }
+
+        data.items.forEach(item => {
+            const div = document.createElement('div');
+            const isSelectable = (currentBrowserType === 'music' || currentBrowserType === 'personalAudio')
+                ? (item.ext === '.mp3' || item.ext === '.wav' || item.ext === '.m4a')
+                : ['.mp4', '.mov', '.jpg', '.png', '.jpeg', '.webp'].includes(item.ext.toLowerCase());
+
+            const isImage = ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(item.ext.toLowerCase());
+            const isVideo = ['.mp4', '.mov', '.webm', '.ogg'].includes(item.ext.toLowerCase());
+            const viewUrl = '/api/fs/view?path=' + encodeURIComponent(item.path);
+
+            div.className = 'browser-item' + (!item.isDir && !isSelectable ? ' disabled' : '');
+            div.dataset.path = item.path;
+            div.dataset.isDir = String(item.isDir);
+
+            let iconHtml = '';
+            if (isImage) {
+                iconHtml = '<img src="' + viewUrl + '" class="browser-preview">';
+            } else if (isVideo) {
+                iconHtml = '<video src="' + viewUrl + '" class="browser-preview" muted></video>';
+            } else {
+                iconHtml = item.isDir ? '📁' : '📄';
+            }
+
+            div.innerHTML = 
+                '<span class="browser-icon">' + iconHtml + '</span>' +
+                '<span class="browser-name">' + item.name + '</span>' +
+                '<span class="browser-size">' + (item.isDir ? '' : 'File') + '</span>';
+
+            browserList.appendChild(div);
+        });
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        browserList.innerHTML = '<div class="status" style="margin:20px"><strong>Error:</strong> </div>';
+        browserList.lastElementChild?.appendChild(document.createTextNode(msg));
+    }
+}
+
+async function pickFile(path) {
+    try {
+        const res = await fetch('/api/fs/pick', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sourcePath: path, type: currentBrowserType })
+        });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+
+        if (currentBrowserType === 'music' || currentBrowserType === 'personalAudio') {
+            const selectEl = currentBrowserType === 'music' ? musicSelect : personalAudioSelect;
+            if (selectEl) {
+                const opt = document.createElement('option');
+                opt.value = json.data.filename;
+                opt.textContent = json.data.filename;
+                selectEl.appendChild(opt);
+                selectEl.value = json.data.filename;
+            }
+        } else {
+            addAssetToGallery(json.data);
+        }
+        closeSystemBrowser();
+    } catch (e) {
+        alert('Pick failed: ' + e.message);
+    }
+}
+
+function addAssetToGallery(data) {
+    if (!assetGallery) return;
+    const isImage = /\\.(jpg|jpeg|png|gif|webp)$/i.test(data.filename);
+    const div = document.createElement('div');
+    div.className = 'asset-item';
+    
+    let previewHtml = '';
+    if (isImage) {
+        previewHtml = '<img src="' + data.assetUrl + '" class="asset-preview" alt="' + data.filename + '">';
+    }
+
+    div.innerHTML = 
+        previewHtml + 
+        '<div style="font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + data.filename + '</div>' +
+        '<div class="tag-copy" title="Click to insert into script">' + data.tag + '</div>' +
+        '<div class="delete-btn" title="Remove asset">✕</div>';
+    
+    div.querySelector('.delete-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteAsset(data.filename, div);
+    });
+    
+    div.querySelector('.tag-copy')?.addEventListener('click', () => {
+        if (scriptField) {
+            const pos = scriptField.selectionStart;
+            const text = scriptField.value;
+            scriptField.value = text.slice(0, pos) + data.tag + text.slice(pos);
+            updateScriptMetrics();
+            scriptField.focus();
+        }
+    });
+    
+    assetGallery.appendChild(div);
+}
+
+async function deleteAsset(filename, element) {
+    if (!confirm('Are you sure you want to permanently delete this asset?')) return;
+    
+    try {
+        const res = await fetch('/api/fs/assets/' + encodeURIComponent(filename), {
+            method: 'DELETE'
+        });
+        const json = await res.json();
+        if (json.success) {
+            element.remove();
+        } else {
+            alert('Failed to delete asset: ' + json.error);
+        }
+    } catch (e) {
+        console.error('Delete failed', e);
+        alert('Failed to delete asset. Check console for details.');
+    }
+}
+
+async function loadGalleryAssets() {
+    try {
+        const res = await fetch('/api/fs/assets');
+        const json = await res.json();
+        if (json.success) {
+            json.data.forEach(addAssetToGallery);
+        }
+    } catch (e) {
+        console.error('Failed to load gallery assets', e);
+    }
+}
+`;
+}

@@ -1,0 +1,39 @@
+name: YouTube Privacy Guard (auto-private after 7 days public)
+
+on:
+  schedule:
+    - cron: "0 9 * * *"      # daily 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  expire:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install YouTube OAuth deps
+        run: pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
+
+      - name: Auto-private videos public for 7+ days
+        env:
+          YT_TOKEN_B64: ${{ secrets.YT_TOKEN_B64 }}
+          YT_CLIENT_SECRETS_B64: ${{ secrets.YT_CLIENT_SECRETS_B64 }}
+        run: python tools/youtube_oauth.py expire --days 7
+
+      - name: Commit privacy log
+        if: always()
+        run: |
+          git config user.name "billionaire-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add data/yt_uploads.json || true
+          git diff --cached --quiet || git commit -m "chore: youtube privacy log [skip ci]"
+          git push || echo "push skipped"
