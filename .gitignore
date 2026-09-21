@@ -200,3 +200,6 @@ client_secrets.json
 token.json
 client_secrets.json
 *.pickle
+token.json
+client_secrets.json
+.env
