@@ -27,6 +27,10 @@ export interface PlanOptions {
     dialogueVoices?: [string, string];
     /** Per-scene in-scene dialogue (back-and-forth, each turn its own voice). */
     sceneDialogue?: Record<number, { speaker: string; text: string }[]>;
+    /** Target platform used for runtime-aware pacing. */
+    platform?: 'shorts' | 'tiktok' | 'reels' | 'youtube';
+    /** Target runtime for platform-constrained outputs (seconds). */
+    targetRuntimeSec?: number;
     /** ═══ Advanced editing (per-scene, from agentic-scripts.json) ═══
      *  Map of scene index → advanced FX (chromaKey/speed/stabilize/filter/
      *  blur/keyframes). Collected into Plan.advanced for render.ts. */
@@ -222,6 +226,23 @@ export async function applyProEdits(
             // Blend: at least the breathing minimum, at most 8 seconds
             s.durationSec = Math.max(minDur, Math.min(Math.round(wordDur), 8));
         });
+        plan.totalDurationSec = scenes.reduce((acc, s) => acc + s.durationSec, 0);
+    }
+
+    // Shorts in this project are intentionally 45–59s. Compress the planned
+    // scene durations before the final gate instead of failing after acquisition.
+    if (opts.platform === 'shorts' && (opts.targetRuntimeSec ?? 0) > 0 && plan.totalDurationSec > (opts.targetRuntimeSec ?? 0)) {
+        const target = Number(opts.targetRuntimeSec);
+        const scale = target / plan.totalDurationSec;
+        for (const scene of scenes) {
+            scene.durationSec = Math.max(2.5, Math.round(scene.durationSec * scale * 10) / 10);
+        }
+        const total = scenes.reduce((acc, s) => acc + s.durationSec, 0);
+        const drift = Math.round((total - target) * 10) / 10;
+        if (scenes.length > 0 && Math.abs(drift) > 0) {
+            const last = scenes[scenes.length - 1];
+            last.durationSec = Math.max(2.5, Math.round((last.durationSec - drift) * 10) / 10);
+        }
         plan.totalDurationSec = scenes.reduce((acc, s) => acc + s.durationSec, 0);
     }
     return plan;
