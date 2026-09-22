@@ -52,10 +52,48 @@ import {
 } from './advanced-fx.js';
 import type { ScenePlan } from '../types.js';
 
+let resolvedFfmpeg: string | undefined;
 function ff(): string {
+    if (resolvedFfmpeg) return resolvedFfmpeg;
+
+    const staticPath = ffmpegPath as unknown as string;
+    const hasFilter = (bin: string, name: string): boolean => {
+        try {
+            const out = execFileSync(bin, ['-hide_banner', '-filters'], {
+                stdio: ['ignore', 'pipe', 'ignore'],
+                timeout: 10000,
+            }).toString();
+            return new RegExp('\\\\b' + name.replace(/[.*+?^$(){}|[\\]\\\\]/g, '\\\\function ff(): string {
     const p = ffmpegPath as unknown as string;
     if (!p || !fs.existsSync(p)) throw new Error('ffmpeg-static binary not found');
     return p;
+}
+') + '\\\\b').test(out);
+        } catch {
+            return false;
+        }
+    };
+
+    // ffmpeg-static is preferred for reproducibility, but some static builds
+    // omit libfreetype/drawtext. The CI renderer relies on drawtext for burned
+    // captions. In that case fall back to the runner's ffmpeg, which is
+    // installed explicitly by the workflow and includes the filter.
+    if (staticPath && fs.existsSync(staticPath) && hasFilter(staticPath, 'drawtext')) {
+        resolvedFfmpeg = staticPath;
+        return resolvedFfmpeg;
+    }
+    try {
+        if (hasFilter('ffmpeg', 'drawtext')) {
+            resolvedFfmpeg = 'ffmpeg';
+            return resolvedFfmpeg;
+        }
+    } catch { /* fall through */ }
+
+    if (staticPath && fs.existsSync(staticPath)) {
+        resolvedFfmpeg = staticPath;
+        return resolvedFfmpeg;
+    }
+    throw new Error('No usable ffmpeg binary found');
 }
 
 export interface ComposeInput {
