@@ -44,7 +44,7 @@ PEXELS_KEY = os.getenv("PEXELS_API_KEY", "").strip()
 API_T = 7            # spec: ~6-8s
 RETRY = 1            # max 1 retry per source
 MAX_REUSE = 2        # one file serves at most 2 scenes
-DL_T = 60            # file download timeout
+DL_T = 20            # keep asset prep bounded; local/generated fallbacks handle misses
 AI_T = 40            # key-less AI image timeout
 WPS = 3.0
 
@@ -318,10 +318,19 @@ def assign(tag_val, orient):
 
     base = ("va-" if kind == "image" else "vv-") + h(f"{kind}|{query}|{orient}")
 
+    # Reuse restored/local assets before any network call.  This makes the
+    # asset-prep phase genuinely cache-first across GitHub Actions runs.
+    for fname in sorted(PREEXISTING):
+        if fname.startswith(base) and (VIS / fname).exists():
+            used = usage.get(fname, 0)
+            if used < MAX_REUSE:
+                usage[fname] = used + 1
+                return fname, "cache", kind
+
     for fname, cnt in usage.items():
         if fname.startswith(base) and cnt < MAX_REUSE and (VIS / fname).exists():
             usage[fname] += 1
-            return fname, ("cache" if fname in PREEXISTING else "reuse"), kind
+            return fname, "reuse", kind
 
     slot = len([f for f in usage if f.startswith(base)])
     if kind == "image":
