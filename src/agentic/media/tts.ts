@@ -223,6 +223,10 @@ export async function generateAgenticVoiceovers(
                 sceneNumber: s.sceneNumber,
                 voiceoverText: s.voiceoverText,
                 duration: s.durationSec,
+                // Preserve planner-assigned rate/pitch metadata for constrained
+                // short-form narration; without this the Edge-TTS fallback
+                // silently reverted to +0% and could overrun the 57s target.
+                voiceConfig: (s as any).voiceConfig,
             }));
             try {
                 const map = await withTimeout(
