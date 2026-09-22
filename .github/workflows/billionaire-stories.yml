@@ -39,7 +39,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
           echo "System ffmpeg: $(ffmpeg -version | head -n 1)"
-          ffmpeg -hide_banner -filters 2>/dev/null | grep -E '\\bdrawtext\\b' >/dev/null
+          ffmpeg -hide_banner -filters 2>/dev/null | grep -F 'drawtext' >/dev/null
 
       - name: Install Node dependencies
         run: npm ci || npm install
