@@ -66,10 +66,13 @@ jobs:
           CI_ZERO_NETWORK: "1"
         run: python scripts/preflight.py
 
-      - name: Render shorts + longform (Zero Network)
+      - name: Render shorts + longform (Local Assets + Prepared Audio)
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AGENTIC_VOICE_FALLBACK: "1"
+          AUTO_FREE_MUSIC: "true"
+          CI_ZERO_NETWORK: "1"
         run: npm run agentic:batch -- --file input/scripts/render-jobs.json
 
       - name: Duration gate
