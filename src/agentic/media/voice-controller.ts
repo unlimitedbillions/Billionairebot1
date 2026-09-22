@@ -226,6 +226,33 @@ export async function resolveProfileId(ws: AgenticWorkspace, explicitId?: string
 }
 
 /** Generate one scene's audio via the live backend. Throws on failure. */
+/** Create a valid silent WAV when a TTS scene cannot be generated.
+ * This is a last-resort render guard: one unavailable voice request must not
+ * remove the scene's timeline audio or abort an otherwise renderable video.
+ */
+function createSilentTrack(outputPath: string, durationSec: number): number {
+    const duration = Math.max(0.25, Math.min(120, Number(durationSec) || 3));
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    try {
+        execFileSync(
+            ffmpegPath as unknown as string,
+            [
+                '-v', 'error',
+                '-y',
+                '-f', 'lavfi',
+                '-i', `anullsrc=r=44100:cl=mono:d=${duration.toFixed(3)}`,
+                '-c:a', 'pcm_s16le',
+                outputPath,
+            ],
+            { stdio: ['ignore', 'ignore', 'pipe'], timeout: 30000 },
+        );
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 44) return duration;
+    } catch (e: any) {
+        console.warn(`silent-track generation failed: ${e?.message ?? e}`);
+    }
+    return 0;
+}
+
 async function generateScene(
     text: string,
     outputPath: string,
@@ -549,6 +576,18 @@ export async function runVoiceStage(
             }
         } catch (e: any) {
             console.warn(`scene ${scene.sceneNumber} voice failed: ${e?.message}`);
+            // Never leave a missing audio file behind. A valid silent track
+            // preserves scene timing and lets the video finish even when the
+            // primary speech backend is degraded.
+            const silentPath = path.join(audioDir, `scene_${scene.sceneNumber}_voice_silent.wav`);
+            const silentDur = createSilentTrack(silentPath, scene.durationSec ?? 3);
+            if (silentDur > 0) {
+                voices.push({
+                    sceneIndex: scene.sceneNumber - 1,
+                    audioPath: silentPath,
+                    durationSec: silentDur,
+                });
+            }
         }
         report(Math.round(30 + (i + 1) / total * 60), `scene ${scene.sceneNumber} done`);
     }
