@@ -63,32 +63,24 @@ function ff(): string {
                 stdio: ['ignore', 'pipe', 'ignore'],
                 timeout: 10000,
             }).toString();
-            return new RegExp('\\\\b' + name.replace(/[.*+?^$(){}|[\\]\\\\]/g, '\\\\function ff(): string {
-    const p = ffmpegPath as unknown as string;
-    if (!p || !fs.existsSync(p)) throw new Error('ffmpeg-static binary not found');
-    return p;
-}
-') + '\\\\b').test(out);
+            return out.split(/\r?\n/).some((line) => new RegExp('\\\\b' + name + '\\\\b').test(line));
         } catch {
             return false;
         }
     };
 
-    // ffmpeg-static is preferred for reproducibility, but some static builds
-    // omit libfreetype/drawtext. The CI renderer relies on drawtext for burned
-    // captions. In that case fall back to the runner's ffmpeg, which is
-    // installed explicitly by the workflow and includes the filter.
+    // Prefer ffmpeg-static when it contains the filters required by the
+    // renderer. Some static builds omit libfreetype/drawtext, however. In CI
+    // the workflow installs the system ffmpeg explicitly, so use that binary
+    // when it is the capable build.
     if (staticPath && fs.existsSync(staticPath) && hasFilter(staticPath, 'drawtext')) {
         resolvedFfmpeg = staticPath;
         return resolvedFfmpeg;
     }
-    try {
-        if (hasFilter('ffmpeg', 'drawtext')) {
-            resolvedFfmpeg = 'ffmpeg';
-            return resolvedFfmpeg;
-        }
-    } catch { /* fall through */ }
-
+    if (hasFilter('ffmpeg', 'drawtext')) {
+        resolvedFfmpeg = 'ffmpeg';
+        return resolvedFfmpeg;
+    }
     if (staticPath && fs.existsSync(staticPath)) {
         resolvedFfmpeg = staticPath;
         return resolvedFfmpeg;
