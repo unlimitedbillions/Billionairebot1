@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 JOBS = ROOT / "input" / "scripts" / "render-jobs.json"
 SRC = ROOT / "input" / "scripts" / "billionaire-stories.json"
 MANIFEST = ROOT / "cache" / "assets.json"
-BANDS = {"short": (145, 175), "long": (360, 440)}
+BANDS = {"short": (100, 175), "long": (360, 440)}
 W = 30
 
 
