@@ -37,7 +37,7 @@ for (const job of jobs) {
     }
   }
   if (!videoPath) { console.log(`[duration] ${job.id} | MISSING VIDEO`); outOfSpec.push(job.id); continue; }
-  const d = parseFloat(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", videoPath).toString());
+  const d = parseFloat(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", videoPath]).toString());
   const s = SPEC[kind];
   const ok = d >= s.min && d <= s.max;
   console.log(`[duration] ${job.id} | ${d.toFixed(1)}s | ${ok ? "OK" : `OUT OF SPEC (${s.min}-${s.max === Infinity ? "inf" : s.max}s)`}`);
