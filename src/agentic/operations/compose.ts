@@ -1042,58 +1042,129 @@ function concatAudio(files: string[], out: string): void {
     if (files.length === 0) throw new Error('audio concat failed: no audio files supplied');
 
     /*
-     * Do NOT use the concat demuxer here. TTS/fallback audio can legitimately
-     * arrive with different containers, sample rates, channel layouts, or
-     * sample formats. The concat demuxer requires compatible stream parameters
-     * and was the direct cause of the CI failure ("audio concat failed").
+     * CI-safe audio concatenation.
      *
-     * Normalize every input first, then concatenate with the concat FILTER.
-     * filter_complex_script also avoids command-line length limits for 30+
-     * scenes.
+     * The previous implementation opened every TTS file at once and connected
+     * all of them to one large concat filter graph. Long jobs (30+ scenes)
+     * could make ffmpeg-static fail before emitting a useful diagnostic.
+     *
+     * Normalize each input independently to the same PCM/WAV stream, then use
+     * the concat DEMUXER on those known-compatible files. This keeps the peak
+     * ffmpeg working set bounded and makes failures attributable to one input.
+     * The final WAV is encoded once to the requested M4A output.
      */
     const workDir = path.dirname(out);
-    const script = path.join(workDir, 'audio_concat_filter.txt');
-    const normalized = files.map((_, i) =>
-        `[${i}:a]aresample=44100,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=mono,asetpts=PTS-STARTPTS[a${i}]`,
-    );
-    const inputs = files.flatMap((file) => ['-i', file]);
-    const concatInputs = files.map((_, i) => `[a${i}]`).join('');
-    const graph = [
-        ...normalized,
-        `${concatInputs}concat=n=${files.length}:v=0:a=1[aout]`,
-    ].join(';');
-    fs.writeFileSync(script, graph, 'utf8');
+    fs.mkdirSync(workDir, { recursive: true });
+    const tempDir = path.join(workDir, `audio_concat_${Date.now()}_${process.pid}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    const normalized: string[] = [];
+
+    const ffmpegError = (e: any): string => {
+        const stderr = String(e?.stderr ?? '');
+        const message = String(e?.message ?? e ?? '');
+        return (stderr || message).replace(/[\\r\\n]+/g, ' ').slice(-2000);
+    };
 
     try {
-        execFileSync(
-            ff(),
-            [
-                '-y',
-                ...inputs,
-                '-filter_complex_script', script,
-                '-map', '[aout]',
-                '-ar', '44100',
-                '-ac', '1',
-                '-c:a', 'aac',
-                '-b:a', '192k',
-                '-movflags', '+faststart',
-                out,
-            ],
-            { stdio: ['ignore', 'ignore', 'pipe'], timeout: 120000 },
+        for (let i = 0; i < files.length; i++) {
+            const input = files[i];
+            if (!input || !fs.existsSync(input)) {
+                throw new Error(`missing audio input ${i + 1}/${files.length}: ${input || '<empty path>'}`);
+            }
+            if (fs.statSync(input).size === 0) {
+                throw new Error(`empty audio input ${i + 1}/${files.length}: ${input}`);
+            }
+
+            const wav = path.join(tempDir, `part_${String(i).padStart(3, '0')}.wav`);
+            try {
+                execFileSync(
+                    ff(),
+                    [
+                        '-v', 'error',
+                        '-y',
+                        '-i', input,
+                        '-map', '0:a:0',
+                        '-vn',
+                        '-ar', '44100',
+                        '-ac', '1',
+                        '-c:a', 'pcm_s16le',
+                        wav,
+                    ],
+                    { stdio: ['ignore', 'ignore', 'pipe'], timeout: 120000 },
+                );
+            } catch (e: any) {
+                throw new Error(`normalize failed for audio input ${i + 1}/${files.length} (${path.basename(input)}): ${ffmpegError(e)}`);
+            }
+
+            if (!fs.existsSync(wav) || fs.statSync(wav).size < 44) {
+                throw new Error(`normalize produced an invalid WAV for audio input ${i + 1}/${files.length} (${path.basename(input)})`);
+            }
+            normalized.push(wav);
+        }
+
+        const list = path.join(tempDir, 'concat.txt');
+        const quoteConcatPath = (p: string): string =>
+            p.replace(/\\/g, '/').replace(/'/g, "'\\''");
+        fs.writeFileSync(
+            list,
+            normalized.map((p) => `file '${quoteConcatPath(path.resolve(p))}'`).join('\\n') + '\\n',
+            'utf8',
         );
+
+        const joinedWav = path.join(tempDir, 'joined.wav');
+        try {
+            execFileSync(
+                ff(),
+                [
+                    '-v', 'error',
+                    '-y',
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', list,
+                    '-map', '0:a:0',
+                    '-c:a', 'copy',
+                    joinedWav,
+                ],
+                { stdio: ['ignore', 'ignore', 'pipe'], timeout: 120000 },
+            );
+        } catch (e: any) {
+            throw new Error(`concat demuxer failed after normalization: ${ffmpegError(e)}`);
+        }
+
+        if (!fs.existsSync(joinedWav) || fs.statSync(joinedWav).size < 44) {
+            throw new Error('concat demuxer produced an invalid/empty WAV');
+        }
+
+        try {
+            execFileSync(
+                ff(),
+                [
+                    '-v', 'error',
+                    '-y',
+                    '-i', joinedWav,
+                    '-map', '0:a:0',
+                    '-c:a', 'aac',
+                    '-b:a', '192k',
+                    '-movflags', '+faststart',
+                    out,
+                ],
+                { stdio: ['ignore', 'ignore', 'pipe'], timeout: 120000 },
+            );
+        } catch (e: any) {
+            throw new Error(`final AAC encode failed: ${ffmpegError(e)}`);
+        }
+
         if (!fs.existsSync(out) || fs.statSync(out).size < 1024) {
             throw new Error('ffmpeg produced an empty/invalid concatenated audio file');
         }
     } catch (e: any) {
-        const detail = String(e?.stderr ?? e?.message ?? e)
-            .replace(/[\\r\\n]+/g, ' ')
-            .slice(-1200);
+        const detail = String(e?.message ?? e ?? 'unknown error').replace(/[\\r\\n]+/g, ' ').slice(-3000);
         throw new Error(`audio concat failed: ${detail}`);
     } finally {
-        try { fs.rmSync(script, { force: true }); } catch { /* ignore */ }
+        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
 }
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase 2 — Advanced per-scene effect helpers
 // These consume the new agentic-scripts.json fields that were previously
