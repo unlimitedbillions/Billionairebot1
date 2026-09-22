@@ -879,11 +879,25 @@ export function applyOverlays(baseVideo: string, vf: string[], outDir: string): 
     if (vf.length === 0 || !baseVideo || !fs.existsSync(baseVideo)) return baseVideo;
     const ov = path.join(outDir, 'overlays.mp4');
     const script = path.join(outDir, 'overlays_filter.txt');
-    fs.writeFileSync(script, vf.join(','));
-    const args = ['-y', '-i', baseVideo, '-filter_script:v', script, '-c:v', 'libx264', '-preset', 'veryfast', ov];
-    try { execFileSync(ff(), args, { stdio: 'ignore', timeout: 120000 }); return fs.existsSync(ov) && fs.statSync(ov).size > 0 ? ov : baseVideo; }
-    catch (e: any) { console.warn(`  ⚠ overlay ffmpeg failed: ${String(e?.stderr ?? e?.message).slice(0, 300)}`); return baseVideo; }
-    finally { try { fs.rmSync(script, { force: true }); } catch { /* ignore */ } }
+    // Use an explicit filter_complex graph. This is more robust than
+    // -filter_script:v for long generated chains because the input/output
+    // pads are explicit and the original audio stream is mapped deliberately.
+    fs.writeFileSync(script, `[0:v]${vf.join(',')}[vout]\n`, 'utf8');
+    const args = [
+        '-y', '-i', baseVideo,
+        '-filter_complex_script', script,
+        '-map', '[vout]', '-map', '0:a?',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+        '-c:a', 'copy', ov,
+    ];
+    try {
+        execFileSync(ff(), args, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 120000 });
+        return fs.existsSync(ov) && fs.statSync(ov).size > 0 ? ov : baseVideo;
+    } catch (e: any) {
+        const detail = String(e?.stderr ?? e?.message ?? e).replace(/[\\r\\n]+/g, ' ').slice(-800);
+        console.warn(`  ⚠ overlay ffmpeg failed: ${detail}`);
+        return baseVideo;
+    } finally { try { fs.rmSync(script, { force: true }); } catch { /* ignore */ } }
 }
 
 function estimateDur(sceneCount: number): number {
@@ -1109,7 +1123,7 @@ function concatAudio(files: string[], out: string): void {
         // edge cases with long absolute runner paths/escaping.
         fs.writeFileSync(
             list,
-            normalized.map((p) => `file '${path.basename(p)}'`).join('\\n') + '\\n',
+            normalized.map((p) => `file '${path.basename(p)}'`).join('\n') + '\n',
             'utf8',
         );
 
