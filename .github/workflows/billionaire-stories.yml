@@ -41,7 +41,7 @@ jobs:
         run: npm ci || npm install
 
       - name: Install Python dependencies
-        run: pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 requests
+        run: pip install -r requirements.txt
 
       - name: Restore asset pool cache
         uses: actions/cache@v4
@@ -58,7 +58,12 @@ jobs:
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
         run: python scripts/asset_manager.py
 
+      - name: Ensure Remotion browser
+        run: npx remotion browser ensure
+
       - name: PREFLIGHT gate
+        env:
+          CI_ZERO_NETWORK: "1"
         run: python scripts/preflight.py
 
       - name: Render shorts + longform (Zero Network)
