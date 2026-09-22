@@ -73,12 +73,15 @@ function ff(): string {
     // renderer. Some static builds omit libfreetype/drawtext, however. In CI
     // the workflow installs the system ffmpeg explicitly, so use that binary
     // when it is the capable build.
-    if (staticPath && fs.existsSync(staticPath) && hasFilter(staticPath, 'drawtext')) {
-        resolvedFfmpeg = staticPath;
+    // The GitHub workflow installs a full system ffmpeg with the filters
+    // used by this composer. Prefer it when available so color-grade filters
+    // (notably colortemperature/libzimg) are not lost in a minimal static build.
+    if (hasFilter('ffmpeg', 'drawtext') && hasFilter('ffmpeg', 'colortemperature')) {
+        resolvedFfmpeg = 'ffmpeg';
         return resolvedFfmpeg;
     }
-    if (hasFilter('ffmpeg', 'drawtext')) {
-        resolvedFfmpeg = 'ffmpeg';
+    if (staticPath && fs.existsSync(staticPath) && hasFilter(staticPath, 'drawtext')) {
+        resolvedFfmpeg = staticPath;
         return resolvedFfmpeg;
     }
     if (staticPath && fs.existsSync(staticPath)) {
