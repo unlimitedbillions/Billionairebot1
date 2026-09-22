@@ -1117,17 +1117,79 @@ const af = `[1:a]${afBase}${fadeFilter}${volFilter}[a]`;
         fs.writeFileSync(list, segFiles.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
         silent = outDir + '/_av_' + res.workspace.jobId + '.mp4';
         await new Promise<void>((resolve, reject) => {
-            // `-fflags +genpts` regenerates PTS so the concat demuxer with
-            // `-c copy` does not silently drop/truncate frames at segment
-            // boundaries when timestamps are non-monotonic (the classic
-            // concat-copy pitfall). Segments are all libx264/yuv420p/25fps so
-            // stream-copy is safe once timestamps are normalized.
-            const concatArgs = ['-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-y', silent];
-            if (opts.verbose) {
-                logError(('[ffmpeg concat] ' + ffmpeg + ' ' + concatArgs.join(' ')).replace(/[\r\n]/g, ' '));
-            }
-            execFile(ffmpeg, concatArgs, (err: any) =>
-                err ? reject(new Error('concat failed: ' + err)) : resolve());
+            // The segment renderer deliberately produces independent MP4 files.
+            // Stream-copy concat is fast, but ffmpeg's concat demuxer can reject
+            // otherwise valid segments when a single stream carries slightly
+            // different time-base/codec extradata metadata. That failure used to
+            // be reported only as "concat failed", hiding the real stderr and
+            // aborting the whole batch.
+            const runConcat = (args: string[], label: string, done: (err?: any) => void) => {
+                if (opts.verbose) {
+                    logError(('[ffmpeg concat ' + label + '] ' + ffmpeg + ' ' + args.join(' ')).replace(/[\r\n]/g, ' '));
+                }
+                execFile(
+                    ffmpeg,
+                    args,
+                    { maxBuffer: 20 * 1024 * 1024 },
+                    (err: any, _stdout: string, stderr: string) => {
+                        if (err) {
+                            const detail = String(stderr || err?.stderr || err?.message || 'unknown ffmpeg error').slice(-12000);
+                            logError('[ffmpeg concat ' + label + '] ' + detail.replace(/[\r\n]+/g, ' '));
+                            done(new Error('concat ' + label + ' failed: ' + detail));
+                            return;
+                        }
+                        done();
+                    },
+                );
+            };
+
+            // Fast path: normalize timestamps and stream-copy the already
+            // encoded segments.
+            const copyArgs = [
+                '-fflags', '+genpts',
+                '-f', 'concat', '-safe', '0', '-i', list,
+                '-map', '0:v:0', '-map', '0:a:0?',
+                '-c', 'copy',
+                '-avoid_negative_ts', 'make_zero',
+                '-y', silent,
+            ];
+            runConcat(copyArgs, 'copy', (copyErr) => {
+                if (!copyErr) {
+                    resolve();
+                    return;
+                }
+
+                // Recovery path: re-encode once. This costs CPU but removes
+                // concat-demuxer incompatibilities caused by time bases,
+                // AAC extradata, SAR, or other per-segment metadata drift.
+                const recovery = silent.replace(/\.mp4$/i, '_reencoded.mp4');
+                const encodeArgs = [
+                    '-fflags', '+genpts',
+                    '-f', 'concat', '-safe', '0', '-i', list,
+                    '-map', '0:v:0', '-map', '0:a:0?',
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+                    '-pix_fmt', 'yuv420p', '-r', '25',
+                    '-c:a', 'aac', '-b:a', '192k',
+                    '-avoid_negative_ts', 'make_zero',
+                    '-movflags', '+faststart',
+                    '-y', recovery,
+                ];
+                runConcat(encodeArgs, 'recovery', (recoveryErr) => {
+                    if (recoveryErr) {
+                        try { fs.rmSync(recovery, { force: true }); } catch { /* ignore */ }
+                        reject(new Error(
+                            'concat failed after copy + recovery attempts. ' +
+                            String(recoveryErr.message || recoveryErr),
+                        ));
+                        return;
+                    }
+                    try { fs.renameSync(recovery, silent); } catch (e) {
+                        reject(new Error('concat recovery produced a file but rename failed: ' + String(e)));
+                        return;
+                    }
+                    resolve();
+                });
+            });
         });
         // BUG (cleanup leak): _seg_* intermediates and the _concat_*.txt list are
         // created per render but never removed. Clean them up now that concat is done.
