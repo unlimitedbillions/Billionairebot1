@@ -333,17 +333,21 @@ def assign(tag_val, orient):
                     usage[candidate] = used + 1
                     return candidate, "cache", kind
 
-    # Reuse files produced earlier in this same run.
-    for fname, cnt in usage.items():
-        if cnt < MAX_REUSE and (VIS / fname).exists():
-            if kind == "video" and fname.startswith("vv-"):
-                usage[fname] += 1
-                return fname, "reuse", kind
-            if kind == "image" and fname.startswith("va-"):
-                usage[fname] += 1
-                return fname, "reuse", kind
-
-    slot = len([f for f in usage if f.startswith("vv-" if kind == "video" else "va-")])
+    # IMPORTANT: never reuse an unrelated asset merely because it has
+    # the same media type. The previous implementation did that and could
+    # assign an arbitrary earlier clip/image to the next scene, creating many
+    # visually duplicated scenes. Reuse is now restricted to the exact
+    # query+orientation asset slots above. If no exact reusable asset exists,
+    # fetch/generate a new one.
+    used_stems = {Path(f).stem for f in usage}
+    slot = 0
+    while True:
+        probe = ("vv-" if kind == "video" else "va-") + h(
+            f"{kind}|{query}|{orient}|{slot}"
+        )
+        if probe not in used_stems:
+            break
+        slot += 1
     if kind == "image":
         fname, src = fetch_image(query, orient, slot)
     else:
