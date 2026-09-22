@@ -35,8 +35,7 @@ def gather():
                     if sc.get("asset_video") and (ROOT / sc["asset_video"]).exists(): vids_ok += 1
                     
     audio_ok = True
-    try: import edge_tts
-    except: audio_ok = False
+    try: import edge_tts    except: audio_ok = False
     
     return [
         ("Script", bool(jobs), f"{len(jobs)} jobs"),
@@ -49,7 +48,7 @@ def gather():
         ("Audio", audio_ok, "edge-tts"),
         ("Fonts", bool(shutil.which("fc-list")), ""),
         ("FFmpeg", bool(shutil.which("ffmpeg")), ""),
-        ("Remotion browser", bool(shutil.which("node")) and (ROOT / "node_modules" / "remotion").exists(), "node+remotion"),
+        ("Remotion browser", bool(shutil.which("node")) and (ROOT / "node_modules" / "@remotion" / "cli").exists(), "node+remotion"),
     ]
 
 def show(rows, failed):
