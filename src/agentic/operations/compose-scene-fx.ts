@@ -121,14 +121,17 @@ export function gradeFilter(grade: string | undefined): string | undefined {
             // eq alone gives the contrast/saturation "cinematic" look.
             return 'eq=contrast=1.15:saturation=1.05';
         case 'sepia':
-            return 'sepia=0.8';
+            // FFmpeg has no portable `sepia` video filter in the static build.
+            // Use the standard sepia matrix through colorchannelmixer instead.
+            return 'colorchannelmixer=rr=0.393:rg=0.769:rb=0.189:gr=0.349:gg=0.686:gb=0.168:br=0.272:bg=0.534:bb=0.131';
         case 'bw':
         case 'mono':
         case 'grayscale':
             return 'format=gray';
         case 'vintage':
-            // curves=vintage is a single valid filter (no comma).
-            return 'curves=vintage:saturation=1.20';
+            // `curves` has no saturation option. Keep this lightweight and
+            // deterministic with filters that exist in ffmpeg-static.
+            return 'eq=contrast=0.95:saturation=0.85:gamma=1.05';
         case 'vivid':
             return 'eq=saturation=1.40:contrast=1.10';
         case 'neutral':
