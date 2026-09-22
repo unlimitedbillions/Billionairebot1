@@ -318,21 +318,32 @@ def assign(tag_val, orient):
 
     base = ("va-" if kind == "image" else "vv-") + h(f"{kind}|{query}|{orient}")
 
-    # Reuse restored/local assets before any network call.  This makes the
-    # asset-prep phase genuinely cache-first across GitHub Actions runs.
-    for fname in sorted(PREEXISTING):
-        if fname.startswith(base) and (VIS / fname).exists():
-            used = usage.get(fname, 0)
-            if used < MAX_REUSE:
-                usage[fname] = used + 1
-                return fname, "cache", kind
+    # Reuse restored/local assets before any network call. The saved filename
+    # includes the slot in its hash, so compute the exact cache filename here.
+    ext_candidates = [".mp4"] if kind == "video" else [".jpg", ".png"]
+    for slot in range(MAX_REUSE):
+        stem = ("vv-" if kind == "video" else "va-") + h(
+            f"{kind}|{query}|{orient}|{slot}"
+        )
+        for ext in ext_candidates:
+            candidate = stem + ext
+            if candidate in PREEXISTING and (VIS / candidate).exists():
+                used = usage.get(candidate, 0)
+                if used < MAX_REUSE:
+                    usage[candidate] = used + 1
+                    return candidate, "cache", kind
 
+    # Reuse files produced earlier in this same run.
     for fname, cnt in usage.items():
-        if fname.startswith(base) and cnt < MAX_REUSE and (VIS / fname).exists():
-            usage[fname] += 1
-            return fname, "reuse", kind
+        if cnt < MAX_REUSE and (VIS / fname).exists():
+            if kind == "video" and fname.startswith("vv-"):
+                usage[fname] += 1
+                return fname, "reuse", kind
+            if kind == "image" and fname.startswith("va-"):
+                usage[fname] += 1
+                return fname, "reuse", kind
 
-    slot = len([f for f in usage if f.startswith(base)])
+    slot = len([f for f in usage if f.startswith("vv-" if kind == "video" else "va-")])
     if kind == "image":
         fname, src = fetch_image(query, orient, slot)
     else:
