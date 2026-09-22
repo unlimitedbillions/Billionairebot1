@@ -146,6 +146,8 @@ export async function runAgenticPipeline(
         hookFirst: req.hookFirst ?? true,
         variablePacing: req.variablePacing ?? true,
         brain,
+        platform: req.platform,
+        targetRuntimeSec: req.maxRuntimeSec,
     });
 
     // Edge-TTS is the final narration fallback in CI. Match speech rate to the
