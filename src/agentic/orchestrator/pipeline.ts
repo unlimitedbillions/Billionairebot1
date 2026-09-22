@@ -160,7 +160,7 @@ export async function runAgenticPipeline(
         const rate = Math.max(0, Math.min(50, Math.round((estimatedNaturalSec / target - 1) * 100)));
         if (rate > 0) {
             for (const scene of plan.scenes) {
-                scene.voiceConfig = { ...(scene.voiceConfig ?? {}), rate };
+                (scene as any).voiceConfig = { ...((scene as any).voiceConfig ?? {}), rate };
             }
             logInfo(`🎙 shorts pacing: target ${target}s; Edge-TTS rate +${rate}%`);
         }
