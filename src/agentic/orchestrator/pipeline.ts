@@ -121,6 +121,8 @@ export async function runAgenticPipeline(
             title: req.title,
             orientation: req.orientation ?? 'portrait',
             voice: resolvedVoice ?? 'en-US-JennyNeural',
+            platform: req.platform,
+            targetRuntimeSec: req.platform === 'shorts' ? (req.maxRuntimeSec ?? 57) : undefined,
             musicQuery: req.musicQuery,
             // Wave N/O — multi-persona cast: forward the declared persona block
             // so scenes get voicePersona/dialogue assignments. Previously these
@@ -145,6 +147,24 @@ export async function runAgenticPipeline(
         variablePacing: req.variablePacing ?? true,
         brain,
     });
+
+    // Edge-TTS is the final narration fallback in CI. Match speech rate to the
+    // short-form runtime target so compressed picture timing is not re-expanded
+    // by a longer natural-speed narration track.
+    if (req.platform === 'shorts' && plan.totalDurationSec > 0) {
+        const estimatedNaturalSec = plan.scenes.reduce((sum, s) => {
+            const words = (s.voiceoverText || '').split(/\s+/).filter(Boolean).length;
+            return sum + Math.max(3, Math.ceil(words / 2.2) + 1.5);
+        }, 0);
+        const target = req.maxRuntimeSec ?? 57;
+        const rate = Math.max(0, Math.min(50, Math.round((estimatedNaturalSec / target - 1) * 100)));
+        if (rate > 0) {
+            for (const scene of plan.scenes) {
+                scene.voiceConfig = { ...(scene.voiceConfig ?? {}), rate };
+            }
+            logInfo(`🎙 shorts pacing: target ${target}s; Edge-TTS rate +${rate}%`);
+        }
+    }
 
     // Localize burned captions to match a non-English voiceover. When the
     // target language isn't English, translate each scene's voiceoverText and
