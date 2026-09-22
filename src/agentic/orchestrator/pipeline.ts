@@ -668,7 +668,7 @@ export async function runAgenticPipeline(
     const manifest = readJson<RenderManifest>(workspace, 'render-manifest.json');
     // Platform-aware runtime cap (X5): map the job's declared platform to the
     // gate's platform table instead of defaulting every job to Shorts' 60s.
-    const PLATFORM_TO_GATE = { tiktok: 'tiktok', youtube: 'youtube', instagram: 'reels', reels: 'reels' } as const;
+    const PLATFORM_TO_GATE = { tiktok: 'tiktok', youtube: 'youtube', instagram: 'reels', reels: 'reels', shorts: 'shorts' } as const;
     const gatePlatform =
         req.platform && PLATFORM_TO_GATE[req.platform]
             ? (PLATFORM_TO_GATE[req.platform] as 'shorts' | 'tiktok' | 'reels' | 'youtube')
