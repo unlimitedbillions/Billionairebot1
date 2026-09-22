@@ -1104,11 +1104,12 @@ function concatAudio(files: string[], out: string): void {
         }
 
         const list = path.join(tempDir, 'concat.txt');
-        const quoteConcatPath = (p: string): string =>
-            p.replace(/\\/g, '/').replace(/'/g, "'\\''");
+        // Keep concat entries relative to the manifest and run ffmpeg with the
+        // manifest directory as cwd. This avoids ffmpeg concat-demuxer parsing
+        // edge cases with long absolute runner paths/escaping.
         fs.writeFileSync(
             list,
-            normalized.map((p) => `file '${quoteConcatPath(path.resolve(p))}'`).join('\\n') + '\\n',
+            normalized.map((p) => `file '${path.basename(p)}'`).join('\\n') + '\\n',
             'utf8',
         );
 
@@ -1121,12 +1122,12 @@ function concatAudio(files: string[], out: string): void {
                     '-y',
                     '-f', 'concat',
                     '-safe', '0',
-                    '-i', list,
+                    '-i', path.basename(list),
                     '-map', '0:a:0',
                     '-c:a', 'copy',
-                    joinedWav,
+                    path.basename(joinedWav),
                 ],
-                { stdio: ['ignore', 'ignore', 'pipe'], timeout: 120000 },
+                { cwd: tempDir, stdio: ['ignore', 'ignore', 'pipe'], timeout: 120000 },
             );
         } catch (e: any) {
             throw new Error(`concat demuxer failed after normalization: ${ffmpegError(e)}`);
