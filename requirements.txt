@@ -1,6 +1,14 @@
+# --- TTS voiceover (pipeline voice engine + preflight Audio check) ---
 edge-tts
+
+# --- Video ingestion (keep UNPINNED: YouTube extractors change often) ---
 yt-dlp
+
+# --- YouTube OAuth + private uploads + 7-day expiry (tools/youtube_oauth.py) ---
 google-api-python-client
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
+
+# --- HTTP for asset manager / pre-fetch / free-AI fallback / Meta publisher ---
+requests
