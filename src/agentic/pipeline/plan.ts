@@ -165,7 +165,13 @@ const HOOK_WORDS =
     /\b(did you know|secret|surprising|shock|never|revealed?|hidden|myth|trick|insane|unbelievable|fact)\b/i;
 export async function applyProEdits(
     plan: Plan,
-    opts: { hookFirst?: boolean; variablePacing?: boolean; brain?: import('../ai/brain.js').AgentBrain } = {},
+    opts: {
+        hookFirst?: boolean;
+        variablePacing?: boolean;
+        brain?: import('../ai/brain.js').AgentBrain;
+        platform?: PlanOptions['platform'];
+        targetRuntimeSec?: number;
+    } = {},
 ): Promise<Plan> {
     const scenes = plan.scenes;
     if (scenes.length === 0) return plan;
