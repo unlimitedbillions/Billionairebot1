@@ -81,7 +81,7 @@ export interface PipelineRequest {
     /** Background music ducking depth. */
     musicIntensity?: 'calm' | 'mid' | 'energetic';
     /** Target platform for auto-tailoring. */
-    platform?: 'tiktok' | 'youtube' | 'instagram' | 'reels';
+    platform?: 'tiktok' | 'youtube' | 'instagram' | 'reels' | 'shorts';
     /** Explicit runtime-cap override (seconds) for gate check X5. When set,
      *  takes precedence over the platform table. */
     maxRuntimeSec?: number;
