@@ -50,9 +50,28 @@ def save_log(entries):
 
 
 def _b64_env(name, dest: Path):
+    """Materialize a base64 secret, tolerating missing padding and URL-safe input.
+    GitHub secrets are sometimes stored without trailing '=' padding; Python's
+    strict decoder otherwise raises 'Incorrect padding' before upload starts.
+    Raw JSON is also accepted as a safe local/CI fallback.
+    """
     val = os.getenv(name, "").strip()
-    if val and not dest.exists():
-        dest.write_bytes(base64.b64decode(val))
+    if not val or dest.exists():
+        return
+    if val.startswith("{"):
+        try:
+            json.loads(val)
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"[yt] {name} contains invalid raw JSON: {e}")
+        dest.write_text(val, encoding="utf-8")
+        return
+    compact = "".join(val.split())
+    compact += "=" * (-len(compact) % 4)
+    try:
+        data = base64.b64decode(compact, altchars=b"-_", validate=True)
+    except Exception as e:
+        raise SystemExit(f"[yt] {name} is not valid base64 (check that the secret was encoded once): {e}")
+    dest.write_bytes(data)
 
 
 def _is_termux():
