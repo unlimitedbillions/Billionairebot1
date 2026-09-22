@@ -580,7 +580,8 @@ export async function runVoiceStage(
             // preserves scene timing and lets the video finish even when the
             // primary speech backend is degraded.
             const silentPath = path.join(audioDir, `scene_${scene.sceneNumber}_voice_silent.wav`);
-            const silentDur = createSilentTrack(silentPath, scene.durationSec ?? 3);
+            const plannedDuration = Number((scene as unknown as { durationSec?: number }).durationSec ?? 3);
+            const silentDur = createSilentTrack(silentPath, plannedDuration);
             if (silentDur > 0) {
                 voices.push({
                     sceneIndex: scene.sceneNumber - 1,
