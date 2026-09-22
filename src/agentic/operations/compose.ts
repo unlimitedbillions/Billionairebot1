@@ -748,7 +748,7 @@ export async function composeVideo(input: ComposeInput): Promise<ComposeResult> 
     const validVoices = audios
         .filter((a) => a && fs.existsSync(a) && fs.statSync(a).size > 0)
         .map((a, idx) => applyVoiceAudioFx(a, idx, job, outDir)); // Phase 2: per-scene voice FX
-    const voiceConcat = path.join(outDir, 'voice_concat.aac');
+    const voiceConcat = path.join(outDir, 'voice_concat.m4a');
     if (validVoices.length > 0) {
         concatAudio(validVoices, voiceConcat);
         if (fs.existsSync(voiceConcat) && fs.statSync(voiceConcat).size > 0) {
@@ -1039,15 +1039,58 @@ export function crossfadeSlideshow(clips: string[], W: number, H: number, out: s
 }
 
 function concatAudio(files: string[], out: string): void {
-    const list = path.join(path.dirname(out), 'audio_list.txt');
-    fs.writeFileSync(list, files.map((f) => `file '${f.replace(/'/g, "'\\''")}'`).join('\n'));
-    // Re-encode to AAC rather than `-c copy`: the inputs are pcm_s16le WAVs and
-    // the output is an .aac container, so a stream copy always fails (and used
-    // to silently drop the voiceover from the final mix). Encoding produces a
-    // valid concatenated voice track.
-    try { execFileSync(ff(), ['-y', '-fflags', '+genpts', '-f', 'concat', '-safe', '0', '-i', list, '-c:a', 'aac', '-b:a', '192k', out], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 60000 }); } catch (e: any) {
-        const detail = String(e?.stderr ?? e?.message ?? e).slice(0, 300);
+    if (files.length === 0) throw new Error('audio concat failed: no audio files supplied');
+
+    /*
+     * Do NOT use the concat demuxer here. TTS/fallback audio can legitimately
+     * arrive with different containers, sample rates, channel layouts, or
+     * sample formats. The concat demuxer requires compatible stream parameters
+     * and was the direct cause of the CI failure ("audio concat failed").
+     *
+     * Normalize every input first, then concatenate with the concat FILTER.
+     * filter_complex_script also avoids command-line length limits for 30+
+     * scenes.
+     */
+    const workDir = path.dirname(out);
+    const script = path.join(workDir, 'audio_concat_filter.txt');
+    const normalized = files.map((_, i) =>
+        `[${i}:a]aresample=44100,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=mono,asetpts=PTS-STARTPTS[a${i}]`,
+    );
+    const inputs = files.flatMap((file) => ['-i', file]);
+    const concatInputs = files.map((_, i) => `[a${i}]`).join('');
+    const graph = [
+        ...normalized,
+        `${concatInputs}concat=n=${files.length}:v=0:a=1[aout]`,
+    ].join(';');
+    fs.writeFileSync(script, graph, 'utf8');
+
+    try {
+        execFileSync(
+            ff(),
+            [
+                '-y',
+                ...inputs,
+                '-filter_complex_script', script,
+                '-map', '[aout]',
+                '-ar', '44100',
+                '-ac', '1',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-movflags', '+faststart',
+                out,
+            ],
+            { stdio: ['ignore', 'ignore', 'pipe'], timeout: 120000 },
+        );
+        if (!fs.existsSync(out) || fs.statSync(out).size < 1024) {
+            throw new Error('ffmpeg produced an empty/invalid concatenated audio file');
+        }
+    } catch (e: any) {
+        const detail = String(e?.stderr ?? e?.message ?? e)
+            .replace(/[\\r\\n]+/g, ' ')
+            .slice(-1200);
         throw new Error(`audio concat failed: ${detail}`);
+    } finally {
+        try { fs.rmSync(script, { force: true }); } catch { /* ignore */ }
     }
 }
 
