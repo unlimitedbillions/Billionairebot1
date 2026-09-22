@@ -28,7 +28,7 @@ export interface PlanOptions {
     /** Per-scene in-scene dialogue (back-and-forth, each turn its own voice). */
     sceneDialogue?: Record<number, { speaker: string; text: string }[]>;
     /** Target platform used for runtime-aware pacing. */
-    platform?: 'shorts' | 'tiktok' | 'reels' | 'youtube';
+    platform?: 'shorts' | 'tiktok' | 'instagram' | 'reels' | 'youtube';
     /** Target runtime for platform-constrained outputs (seconds). */
     targetRuntimeSec?: number;
     /** ═══ Advanced editing (per-scene, from agentic-scripts.json) ═══
