@@ -918,7 +918,7 @@ export function applyOverlays(baseVideo: string, vf: string[], outDir: string): 
     fs.writeFileSync(script, `[0:v]${vf.join(',')}[vout]\n`, 'utf8');
     const args = [
         '-y', '-i', baseVideo,
-        '-filter_complex_script', script,
+        '-/filter_complex', script,
         '-map', '[vout]', '-map', '0:a?',
         '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
         '-c:a', 'copy', ov,
