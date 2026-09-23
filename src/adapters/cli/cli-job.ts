@@ -453,6 +453,10 @@ export function buildPipelineRequest(job: AgenticCliJob, id: string, topic: stri
         backend: job.backend ?? 'agent',
         candidatesPerAsset: job.candidatesPerAsset ?? 2,
         language: job.language,
+        // Preserve the declared runtime cap for the planner/render gate.
+        // Without this field the shorts target (57s) never reached the
+        // orchestrator, so the plan could collapse to a much shorter render.
+        maxRuntimeSec: (job as any).maxRuntimeSec ?? (job as any).targetRuntimeSec,
         backgroundMusic: job.backgroundMusic,
         musicVolume: job.musicVolume,
         intro: job.intro,
