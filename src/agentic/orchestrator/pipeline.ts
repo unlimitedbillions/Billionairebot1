@@ -12,7 +12,7 @@ import { acquireAssets, AcquireDeps, FetchedVisual } from '../pipeline/acquire.j
 import { verifyAll, VerifyDeps } from '../pipeline/verify.js';
 import { runGateway, GatewayDeps } from '../pipeline/gateway.js';
 import { runFinalGate } from '../pipeline/gate.js';
-import { AgenticWorkspace, readJson, writeJson, pruneWorkspaces } from '../management/workspace.js';
+import { AgenticWorkspace, getAgenticWorkspace, readJson, writeJson, pruneWorkspaces } from '../management/workspace.js';
 import { archiveJob } from '../delivery/archive.js';
 import { openReview } from '../delivery/revision.js';
 import { createPluginRegistry, registerAllPlugins, getPluginRegistry } from '../plugins/index.js';
@@ -46,11 +46,12 @@ async function alignVoiceoverTimeline(
     maxRuntimeSec: number | undefined,
     workspace: AgenticWorkspace,
 ): Promise<void> {
+    // Long-form is driven entirely by natural narration. There is no
+    // 120s target padding and no 120s ceiling here; the long-form duration
+    // gate is satisfied by generating enough spoken content before TTS.
     const target = platform === 'shorts'
         ? Math.min(maxRuntimeSec ?? 57, 50)
-        : platform === 'youtube' && (maxRuntimeSec ?? 0) >= 120
-            ? Math.min(maxRuntimeSec ?? 124, 124)
-            : 0;
+        : 0;
     if (!(target > 0) || !voiceovers.scenes?.length) return;
 
     const usable = voiceovers.scenes.filter((v) =>
@@ -187,7 +188,7 @@ export async function runAgenticPipeline(
     const { optimizeHook } = await import('../operations/hook.js');
     const firstLine = script.split(/\n|\. |\.|\? |\?|! |!/)[0] ?? script;
     const hooked = await optimizeHook(firstLine, { useLlm: Boolean(req.optimizeHook), brain: brain.modelEnabled ? brain : undefined });
-    const finalScript = hooked.hook !== firstLine.trim()
+    let finalScript = hooked.hook !== firstLine.trim()
         ? script.replace(firstLine, hooked.hook)
         : script;
     if (hooked.method === 'llm') logInfo(`🪝 retention hook (LLM): "${hooked.hook}"`);
@@ -198,6 +199,37 @@ export async function runAgenticPipeline(
         req.language && !req.voice
             ? LANGUAGE_DEFAULTS[req.language.toLowerCase().trim()]
             : req.voice;
+
+    // Long-form runtime is achieved with spoken content, never with a silent
+    // tail or an artificially slowed voice. Expand the script BEFORE buildPlan
+    // so TTS, visual semantics, captions and render all consume the same text.
+    if (req.platform === 'youtube' && (req.maxRuntimeSec ?? 0) >= 120) {
+        const estimatedSec = finalScript.trim().split(/\s+/).filter(Boolean).length / 2.2;
+        if (estimatedSec < 120) {
+            const targetWords = Math.ceil(120 * 2.2 + 18);
+            try {
+                const expanded = await bridge.completeJSON<{ script: string }>(
+                    'Expand this long-form billionaire story naturally so the spoken narration reaches at least 120 seconds at normal US English speech speed. Preserve every original fact and event. Add only relevant context, transitions, consequences, and concrete details supported by the supplied story. Do not repeat the conclusion. Return one continuous narration script with no headings, no visual tags, and no hashtags.',
+                    JSON.stringify({
+                        title: req.title,
+                        topic: req.topic,
+                        originalScript: finalScript,
+                        targetWords,
+                    }),
+                    '{"script":"..."}',
+                );
+                if (expanded?.script && expanded.script.trim().length > finalScript.trim().length) {
+                    const expandedWords = expanded.script.trim().split(/\s+/).filter(Boolean).length;
+                    if (expandedWords >= Math.floor(targetWords * 0.9)) {
+                        finalScript = expanded.script.trim();
+                        logInfo(`📝 long-form narration expanded: ~${expandedWords} words before TTS`);
+                    }
+                }
+            } catch (e: any) {
+                logWarn(`⚠ long-form narration expansion skipped: ${e?.message ?? e}`);
+            }
+        }
+    }
 
     const plan = await buildPlan(
         finalScript,
@@ -658,6 +690,66 @@ export async function runAgenticPipeline(
     // 120s) it abandoned the whole acquireAssets promise and discarded every
     // candidate, forcing the offline fallback even though assets were arriving.
     // Default 300s = last-resort safety net only; override with ACQUIRE_TIMEBOX_MS.
+    // ── NARRATION-FIRST PIPELINE ─────────────────────────────────────────────
+    // Generate real scene audio BEFORE acquiring visuals. The narration is the
+    // semantic source for visual queries, and measured audio is the duration
+    // source for every scene.
+    let voiceovers: import('../media/tts.js').VoiceoverResult | null = null;
+    const voiceWorkspace = getAgenticWorkspace(jobId);
+
+    try {
+        const { runVoiceStage } = await import('../media/voice-controller.js');
+        const res = await runVoiceStage(plan, voiceWorkspace, req.voice, (percent, message) => {
+            emit({ stage: 'voiceover', percent, message });
+        }, req.useClonedVoiceId, req.personas);
+        voiceovers = {
+            scenes: res.voices.map((v) => ({
+                sceneIndex: v.sceneIndex,
+                audioPath: v.audioPath,
+                durationSec: v.durationSec,
+                captionSegments: [],
+            })),
+            voiceoverDriven: res.voiceoverDriven,
+            sidecars: [],
+            fallbackUsed: res.fallbackUsed,
+        };
+        emit({
+            stage: 'voiceover',
+            percent: 100,
+            message: `Voiceover ${res.voiceoverDriven ? 'generated (speech backend)' : 'partial via speech backend'} BEFORE visual acquisition`,
+        });
+    } catch (e: any) {
+        console.warn(`⚠ speech backend voice stage failed ("${e?.message}"); falling back to Edge-TTS BEFORE visual acquisition`);
+        voiceovers = await generateAgenticVoiceovers(plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0]);
+        emit({
+            stage: 'voiceover',
+            percent: 100,
+            message: `Voiceover ${voiceovers.voiceoverDriven ? 'generated (Edge-TTS fallback)' : 'fallback tones'} BEFORE visual acquisition`,
+        });
+    }
+
+    // Recompute the visual semantics only after the final narration exists and
+    // immediately before search. This prevents a stale pre-TTS query from
+    // deciding the picture content.
+    for (const s of plan.scenes) {
+        const narration = (s.voiceoverText || '').trim();
+        if (!narration) continue;
+        s.searchKeywords = cfg.expandKeywords
+            ? await cfg.expandKeywords(s, req.title)
+            : ((await brain.expandKeywords(narration, req.title)) ?? expandKeywordsHeuristic(s, req.title));
+    }
+    writeJson(voiceWorkspace, 'narration-first.json', {
+        jobId,
+        voiceoverDriven: voiceovers.voiceoverDriven,
+        scenes: plan.scenes.map((s) => ({
+            sceneNumber: s.sceneNumber,
+            narration: s.voiceoverText,
+            visualQuery: s.searchKeywords,
+            durationSec: voiceovers?.scenes?.find((v) => v.sceneIndex === s.sceneNumber - 1)?.durationSec ?? 0,
+        })),
+        generatedAt: new Date().toISOString(),
+    });
+
     const acquireTimeboxMs = Number(process.env.ACQUIRE_TIMEBOX_MS ?? 300000);
     // Placeholder/fallback orientation follows the job (read by makePlaceholder
     // and generateFallbackVisual so cards match the frame, never pillarboxed).
@@ -878,48 +970,10 @@ export async function runAgenticPipeline(
         }
     }
 
-    let voiceovers: import('../media/tts.js').VoiceoverResult | null = null;
-    if (gate.pass && manifest) {
-        // PRIMARY: native self-driving voice stage (src/speech backend).
-        // It auto-provisions a Kokoro preset profile, preloads the engine,
-        // generates every scene, then tears the backend down (RAM-aware).
-        try {
-            const { runVoiceStage } = await import('../media/voice-controller.js');
-            // Pass the declared persona cast so per-scene voicePersona /
-            // in-scene dialogue resolve to distinct VoiceBox profiles.
-            const res = await runVoiceStage(plan, workspace, req.voice, (percent, message) => {
-                emit({ stage: 'voiceover', percent, message });
-            }, req.useClonedVoiceId, req.personas);
-            // Normalize into the shape the manifest mapping expects.
-            voiceovers = {
-                scenes: res.voices.map((v) => ({
-                    sceneIndex: v.sceneIndex,
-                    audioPath: v.audioPath,
-                    durationSec: v.durationSec,
-                    captionSegments: [],
-                })),
-                voiceoverDriven: res.voiceoverDriven,
-                sidecars: [],
-                fallbackUsed: res.fallbackUsed,
-            };
-            emit({
-                stage: 'voiceover',
-                percent: 100,
-                message: `Voiceover ${res.voiceoverDriven ? 'generated (speech backend)' : 'partial via speech backend'}`,
-            });
-        } catch (e: any) {
-            // FALLBACK: Edge-TTS / tone path (never blocks the pipeline).
-            console.warn(`⚠ speech backend voice stage failed ("${e?.message}"); falling back to Edge-TTS`);
-            voiceovers = await generateAgenticVoiceovers(plan, workspace, req.voice, undefined, req.personalAudio?.[0]);
-            emit({
-                stage: 'voiceover',
-                percent: 100,
-                message: `Voiceover ${voiceovers.voiceoverDriven ? 'generated (Edge-TTS fallback)' : 'fallback tones'}`,
-            });
-        }
-        // TTS is now the authoritative narration timeline. Visual scene durations and
-        // audio paths are aligned here, before the manifest/scene-data are written.
-        await alignVoiceoverTimeline(plan, voiceovers, req.platform, req.maxRuntimeSec, workspace);
+    if (gate.pass && manifest && voiceovers) {
+        // TTS already ran before visual acquisition. This stage only binds the
+        // measured narration tracks to the approved visuals and manifest.
+        await alignVoiceoverTimeline(plan, voiceovers, req.platform, req.maxRuntimeSec, voiceWorkspace);
 
         const voByScene = new Map(voiceovers.scenes.map((s) => [s.sceneIndex, s]));
         for (const a of manifest.assets) {
@@ -977,6 +1031,10 @@ export async function runAgenticPipeline(
             state: gate.pass ? 'awaiting_review' : 'failed',
         });
         persistJob(jobRec);
+    }
+
+    if (gate.pass && !voiceovers) {
+        throw new Error('Narration-first pipeline produced no voiceover timeline');
     }
 
     const res: PipelineResult = {
