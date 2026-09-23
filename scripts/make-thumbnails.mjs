@@ -24,7 +24,8 @@ const fontOpt = FONT ? `fontfile='${FONT}'` : "font='Sans'";
 const esc = (s) => s.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/:/g, "\\:");
 
 function findVideo(jobId) {
-  const dir = path.join(ROOT, "output", jobId);
+  const outputId = String(jobId || "job").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64);
+  const dir = path.join(ROOT, "output", outputId);
   if (!fs.existsSync(dir)) return null;
   const mp4 = fs.readdirSync(dir).find((f) => f.endsWith(".mp4"));
   return mp4 ? path.join(dir, mp4) : null;
