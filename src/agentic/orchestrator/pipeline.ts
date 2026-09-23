@@ -31,6 +31,91 @@ import { logInfo, logWarn, logError } from '../../shared/logging/runtime-logging
 
 export type { PipelineRequest, PipelineResult, PipelineProgress };
 
+/**
+ * Voice is the narration source of truth. Once TTS has produced real audio,
+ * picture timing follows that audio exactly. If a platform has a minimum
+ * runtime and natural narration is slightly short, add quiet breathing room
+ * after each scene rather than slowing the speaker or inventing script text.
+ * The audio is physically padded so the renderer, captions and final mux all
+ * see the same timeline.
+ */
+async function alignVoiceoverTimeline(
+    plan: Plan,
+    voiceovers: import('../media/tts.js').VoiceoverResult,
+    platform: PipelineRequest['platform'],
+    maxRuntimeSec: number | undefined,
+    workspace: AgenticWorkspace,
+): Promise<void> {
+    const target = platform === 'shorts'
+        ? Math.min(maxRuntimeSec ?? 57, 50)
+        : platform === 'youtube' && (maxRuntimeSec ?? 0) >= 120
+            ? Math.min(maxRuntimeSec ?? 124, 124)
+            : 0;
+    if (!(target > 0) || !voiceovers.scenes?.length) return;
+
+    const usable = voiceovers.scenes.filter((v) =>
+        Number.isFinite(v.durationSec) && v.durationSec > 0 && fs.existsSync(v.audioPath),
+    );
+    if (usable.length !== plan.scenes.length) {
+        logWarn(`⚠ narration timeline alignment skipped: only ${usable.length}/${plan.scenes.length} scene audio tracks are available`);
+        return;
+    }
+
+    const naturalTotal = usable.reduce((sum, v) => sum + v.durationSec, 0);
+    if (naturalTotal >= target - 0.05) {
+        plan.totalDurationSec = naturalTotal;
+        return;
+    }
+
+    const pauseSec = (target - naturalTotal) / usable.length;
+    // Never manufacture an unusually slow video from a tiny narration. If the
+    // gap is larger than this, the script itself needs more spoken content.
+    if (pauseSec > 1.5) {
+        logWarn(`⚠ narration timeline gap ${pauseSec.toFixed(2)}s/scene exceeds 1.5s; preserving natural TTS`);
+        plan.totalDurationSec = naturalTotal;
+        return;
+    }
+
+    const staged: { voice: typeof usable[number]; output: string; durationSec: number }[] = [];
+    for (const v of usable) {
+        const sceneTarget = v.durationSec + pauseSec;
+        const output = path.join(
+            workspace.root,
+            'audio',
+            `narration-aligned-${v.sceneIndex + 1}.wav`,
+        );
+        const code = await runFfmpeg([
+            '-i', v.audioPath,
+            '-af', `apad=pad_dur=${pauseSec.toFixed(3)}`,
+            '-t', sceneTarget.toFixed(3),
+            '-c:a', 'pcm_s16le',
+            '-y', output,
+        ], 30000);
+        if (code !== 0 || !fs.existsSync(output)) {
+            logWarn(`⚠ narration timeline padding failed for scene ${v.sceneIndex + 1}; keeping original audio`);
+            return;
+        }
+        const measured = await estimateAudioDurationSafe(output);
+        if (!(measured > 0) || Math.abs(measured - sceneTarget) > 0.15) {
+            logWarn(`⚠ narration timeline probe mismatch for scene ${v.sceneIndex + 1}: expected ${sceneTarget.toFixed(2)}s, got ${measured.toFixed(2)}s`);
+            return;
+        }
+        staged.push({ voice: v, output, durationSec: measured });
+    }
+
+    for (const item of staged) {
+        item.voice.audioPath = item.output;
+        item.voice.durationSec = item.durationSec;
+        const scene = plan.scenes.find((s) => s.sceneNumber === item.voice.sceneIndex + 1);
+        if (scene) scene.durationSec = item.durationSec;
+    }
+    plan.totalDurationSec = staged.reduce((sum, item) => sum + item.durationSec, 0);
+    logInfo(
+        `🎬 narration-driven timeline: natural ${naturalTotal.toFixed(1)}s → ${plan.totalDurationSec.toFixed(1)}s ` +
+        `(target ${target}s, ${pauseSec.toFixed(2)}s breathing room/scene; TTS remains natural speed)`,
+    );
+}
+
 export async function runAgenticPipeline(
     req: PipelineRequest,
     onProgress?: (p: PipelineProgress) => void,
@@ -150,24 +235,7 @@ export async function runAgenticPipeline(
         targetRuntimeSec: req.maxRuntimeSec,
     });
 
-    // Long-form YouTube jobs have a second constraint beyond the planner cap:
-    // the production duration gate requires >=120s of FINAL VIDEO. In CI the
-    // fallback Edge-TTS narration was ~91-97s for these 35-37 scene scripts, and
-    // the 0.4s crossfades shave another ~14s from the picture timeline. That made
-    // a 190s MAX runtime cap irrelevant: the renderer succeeded, then the final
-    // duration gate rejected the finished MP4 as ~92-97s.
-    //
-    // Keep long-form narration deliberately slower in the CI fallback so the
-    // final composed video clears the 120s minimum with margin. This is only a
-    // fallback voice pacing hint; it does not alter the declared max runtime.
-    if (req.platform === 'youtube' && plan.scenes.length > 0 && (req.maxRuntimeSec ?? 0) >= 120) {
-        const longFormRate = -35;
-        for (const scene of plan.scenes) {
-            (scene as any).voiceConfig = { ...((scene as any).voiceConfig ?? {}), rate: longFormRate };
-        }
-        logInfo(`🎙 long-form runtime pacing: CI fallback Edge-TTS rate ${longFormRate}% to clear the 120s final-duration floor`);
-    }
-    // Edge-TTS is the final narration fallback in CI. Match speech rate to the
+    // Runtime alignment is applied after real TTS below. Do not alter speech rate here.\n    // Edge-TTS is the final narration fallback in CI. Match speech rate to the
     // short-form runtime target so compressed picture timing is not re-expanded
     // by a longer natural-speed narration track.
     if (req.platform === 'shorts' && plan.totalDurationSec > 0) {
@@ -867,6 +935,10 @@ export async function runAgenticPipeline(
                 message: `Voiceover ${voiceovers.voiceoverDriven ? 'generated (Edge-TTS fallback)' : 'fallback tones'}`,
             });
         }
+        // TTS is now the authoritative narration timeline. Visual scene durations and
+        // audio paths are aligned here, before the manifest/scene-data are written.
+        await alignVoiceoverTimeline(plan, voiceovers, req.platform, req.maxRuntimeSec, workspace);
+
         const voByScene = new Map(voiceovers.scenes.map((s) => [s.sceneIndex, s]));
         for (const a of manifest.assets) {
             if (a.kind === 'music') continue;
