@@ -150,6 +150,23 @@ export async function runAgenticPipeline(
         targetRuntimeSec: req.maxRuntimeSec,
     });
 
+    // Long-form YouTube jobs have a second constraint beyond the planner cap:
+    // the production duration gate requires >=120s of FINAL VIDEO. In CI the
+    // fallback Edge-TTS narration was ~91-97s for these 35-37 scene scripts, and
+    // the 0.4s crossfades shave another ~14s from the picture timeline. That made
+    // a 190s MAX runtime cap irrelevant: the renderer succeeded, then the final
+    // duration gate rejected the finished MP4 as ~92-97s.
+    //
+    // Keep long-form narration deliberately slower in the CI fallback so the
+    // final composed video clears the 120s minimum with margin. This is only a
+    // fallback voice pacing hint; it does not alter the declared max runtime.
+    if (req.platform === 'youtube' && plan.scenes.length > 0 && (req.maxRuntimeSec ?? 0) >= 120) {
+        const longFormRate = -35;
+        for (const scene of plan.scenes) {
+            (scene as any).voiceConfig = { ...((scene as any).voiceConfig ?? {}), rate: longFormRate };
+        }
+        logInfo(`🎙 long-form runtime pacing: CI fallback Edge-TTS rate ${longFormRate}% to clear the 120s final-duration floor`);
+    }
     // Edge-TTS is the final narration fallback in CI. Match speech rate to the
     // short-form runtime target so compressed picture timing is not re-expanded
     // by a longer natural-speed narration track.
