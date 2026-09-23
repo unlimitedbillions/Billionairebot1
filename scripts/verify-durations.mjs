@@ -15,7 +15,8 @@ const outOfSpec = [];
 for (const job of jobs) {
   const kind = job.id.endsWith("-short") ? "short" : job.id.endsWith("-long") ? "long" : null;
   if (!kind) continue;
-  const dir = path.join(ROOT, "output", job.id);
+  const outputId = (job.id || "job").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64);
+  const dir = path.join(ROOT, "output", outputId);
   // The composer writes the canonical artifact to _compose/final.mp4.
   // Keep the gate aligned with that producer path, while still accepting a
   // legacy top-level MP4 if one exists.
@@ -47,4 +48,4 @@ for (const job of jobs) {
 fs.mkdirSync(path.join(ROOT, "output"), { recursive: true });
 fs.writeFileSync(path.join(ROOT, "output", "out-of-spec.json"), JSON.stringify(outOfSpec, null, 2));
 console.log(outOfSpec.length ? `[duration] ${outOfSpec.length} job(s) out of spec -> skipped at publish.` : "[duration] All jobs within spec.");
-process.exit(0);
+process.exit(outOfSpec.length ? 1 : 0);
