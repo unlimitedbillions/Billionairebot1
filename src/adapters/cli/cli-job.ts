@@ -88,6 +88,10 @@ export interface AgenticCliJob {
     musicIntensity?: 'calm' | 'mid' | 'energetic';
     /** Target platform for auto-tailoring. */
     platform?: 'tiktok' | 'youtube' | 'instagram' | 'reels';
+    /** Maximum/target runtime in seconds for the pipeline's runtime-aware pacing. */
+    maxRuntimeSec?: number;
+    /** Backward-compatible alias for maxRuntimeSec. */
+    targetRuntimeSec?: number;
     /** Video content type. */
     videoType?: 'facts' | 'tutorial' | 'news' | 'story' | 'product' | 'motivational' | 'nature';
     /** Branding config. */
@@ -456,7 +460,7 @@ export function buildPipelineRequest(job: AgenticCliJob, id: string, topic: stri
         // Preserve the declared runtime cap for the planner/render gate.
         // Without this field the shorts target (57s) never reached the
         // orchestrator, so the plan could collapse to a much shorter render.
-        maxRuntimeSec: (job as any).maxRuntimeSec ?? (job as any).targetRuntimeSec,
+        maxRuntimeSec: job.maxRuntimeSec ?? job.targetRuntimeSec,
         backgroundMusic: job.backgroundMusic,
         musicVolume: job.musicVolume,
         intro: job.intro,
