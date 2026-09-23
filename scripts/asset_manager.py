@@ -92,7 +92,7 @@ def pexels_videos(query, orient):
     if not PEXELS_KEY:
         return []
     d = get("https://api.pexels.com/videos/search",
-            {"query": query, "orientation": orient, "per_page": 3},
+            {"query": query, "orientation": orient, "per_page": 10},
             {"Authorization": PEXELS_KEY})
     out = []
     for v in d.get("videos", []):
@@ -307,7 +307,13 @@ def fetch_video(query, orient, slot):
     return None, "missing"
 
 
-def assign(tag_val, orient):
+def assign(tag_val, orient, blocked=None):
+    """Resolve one scene asset without reusing a source already used in this episode.
+
+    blocked is episode-scoped: the same cached asset may still be reused by a
+    different episode, but never twice inside one episode.
+    """
+    blocked = blocked or set()
     tag_val = tag_val.strip()
     if tag_val.startswith("wikimedia:"):
         kind, query = "image", tag_val.split(":", 1)[1].strip()
@@ -327,7 +333,7 @@ def assign(tag_val, orient):
         )
         for ext in ext_candidates:
             candidate = stem + ext
-            if candidate in PREEXISTING and (VIS / candidate).exists():
+            if candidate in PREEXISTING and candidate not in blocked and (VIS / candidate).exists():
                 used = usage.get(candidate, 0)
                 if used < MAX_REUSE:
                     usage[candidate] = used + 1
@@ -372,6 +378,7 @@ def process_jobs(jobs):
         orient = job.get("orientation", "portrait")
         lines = [l for l in job.get("script", "").split("\n") if l.strip()]
         scenes, new_lines = [], []
+        episode_used_assets = set()
 
         for line in lines:
             def repl(m):
@@ -383,7 +390,9 @@ def process_jobs(jobs):
                                    "type": "local", "asset": f"input/visuals/{val}",
                                    "asset_video": None, "source": "local", "query": val})
                     return m.group(0)
-                fname, src, kind = assign(val, orient)
+                fname, src, kind = assign(val, orient, episode_used_assets)
+                if fname:
+                    episode_used_assets.add(fname)
                 scenes.append({"id": f"scene-{n:03d}",
                                "duration": round(scene_words(line) / WPS, 1),
                                "type": "portrait" if kind == "image" else "broll",
@@ -428,7 +437,16 @@ def main():
     ok_i = sum(1 for s in imgs if s["asset"] and (ROOT / s["asset"]).exists())
     ok_v = sum(1 for s in vids if s["asset_video"] and (ROOT / s["asset_video"]).exists())
     uniq = len({s.get("asset") or s.get("asset_video") for s in scenes})
-    log(f"images {ok_i}/{len(imgs)} | clips {ok_v}/{len(vids)} | unique files {uniq} | reuse<= {MAX_REUSE}/file")
+    duplicate_assets = sum(
+        1 for e in episodes
+        for count in [{
+            a: sum(1 for s in e["scenes"] if (s.get("asset") or s.get("asset_video")) == a)
+            for a in {s.get("asset") or s.get("asset_video") for s in e["scenes"] if (s.get("asset") or s.get("asset_video"))}
+        }][0].values() if count > 1
+    )
+    log(f"images {ok_i}/{len(imgs)} | clips {ok_v}/{len(vids)} | unique files {uniq} | duplicate assets within episode {duplicate_assets} | reuse<= {MAX_REUSE}/file")
+    if duplicate_assets:
+        sys.exit("[assets] duplicate asset policy violated: an episode contains a repeated source asset")
     log(f"manifest -> {MANIFEST.relative_to(ROOT)} | renderjobs -> {OUT_JOBS.relative_to(ROOT)}")
     if ok_i < len(imgs) or ok_v < len(vids):
         sys.exit(1)
