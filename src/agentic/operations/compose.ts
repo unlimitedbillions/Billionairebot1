@@ -63,7 +63,10 @@ function ff(): string {
                 stdio: ['ignore', 'pipe', 'ignore'],
                 timeout: 10000,
             }).toString();
-            return out.split(/\r?\n/).some((line) => {\n                const fields = line.trim().split(/\\s+/);\n                return fields[1] === name || fields[2] === name || line.includes(` ${name} `);\n            });
+            return out.split(/\r?\n/).some((line) => {
+                const fields = line.trim().split(/\s+/);
+                return fields[1] === name || fields[2] === name || line.includes(` ${name} `);
+            });
         } catch {
             return false;
         }
