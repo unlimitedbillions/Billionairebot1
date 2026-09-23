@@ -159,12 +159,12 @@ export async function runAgenticPipeline(
             return sum + Math.max(3, Math.ceil(words / 2.2) + 1.5);
         }, 0);
         const target = req.maxRuntimeSec ?? 57;
-        const rate = Math.max(0, Math.min(50, Math.round((estimatedNaturalSec / target - 1) * 100)));
-        if (rate > 0) {
+        const rate = Math.max(-50, Math.min(50, Math.round((estimatedNaturalSec / target - 1) * 100)));
+        if (rate !== 0) {
             for (const scene of plan.scenes) {
                 (scene as any).voiceConfig = { ...((scene as any).voiceConfig ?? {}), rate };
             }
-            logInfo(`🎙 shorts pacing: target ${target}s; Edge-TTS rate +${rate}%`);
+            logInfo(`🎙 runtime pacing: target ${target}s; Edge-TTS rate ${rate >= 0 ? '+' : ''}${rate}%`);
         }
     }
 
