@@ -232,7 +232,7 @@ export async function runAgenticPipeline(
         }
     }
 
-    let plan = await buildPlan(
+    const plan = await buildPlan(
         finalScript,
         {
             jobId,
@@ -733,7 +733,7 @@ export async function runAgenticPipeline(
     // If real TTS is still below 120s, expand the existing scene narration once,
     // regenerate TTS, and measure again. No silence padding, time-stretching,
     // fake frames, or duration-gate changes are permitted.
-    let longFormDurationReport = {
+    const longFormDurationReport = {
         requiredSec: longFormRequiredSec,
         targetWords: isLongForm ? Math.ceil(longFormRequiredSec * 4.5 * 1.05) : 0,
         minimumAcceptedWords: isLongForm ? Math.floor(Math.ceil(longFormRequiredSec * 4.5 * 1.05) * 0.95) : 0,
