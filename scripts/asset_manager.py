@@ -172,7 +172,7 @@ def archive_videos(query):
     query = provider_query(query)
     d = get("https://archive.org/advancedsearch.php", {
         "q": f"({query}) AND mediatype:(movies)", "fl[]": "identifier",
-        "rows": "2", "output": "json"})
+        "rows": "5", "output": "json"})
     out = []
     for doc in ((d.get("response") or {}).get("docs") or []):
         ident = doc.get("identifier")
@@ -180,10 +180,15 @@ def archive_videos(query):
             continue
         try:
             m = get(f"https://archive.org/metadata/{ident}")
-            for f in m.get("files", []):
-                if f.get("name", "").endswith(".mp4") and int(f.get("size", 0)) < 60_000_000:
-                    out.append(f"https://archive.org/download/{ident}/{quote(f['name'], safe='')}")
-                    break
+            candidates = [
+                f for f in m.get("files", [])
+                if f.get("name", "").lower().endswith(".mp4")
+                and int(f.get("size", 0) or 0) < 60_000_000
+            ]
+            # Keep several candidates from each item. Archive can expose one
+            # forbidden/broken derivative while another derivative is usable.
+            for f in candidates[:4]:
+                out.append(f"https://archive.org/download/{ident}/{quote(f['name'], safe='')}")
         except Exception:
             continue
     return out
@@ -335,8 +340,13 @@ def fetch_video(query, orient, slot):
     for src, fn in (("pexels", lambda: pexels_videos(query, orient)),
                     ("wikimedia", lambda: wikimedia_videos(query)),
                     ("archive", lambda: archive_videos(query))):
-        url = _pick(with_retry(fn), slot)
-        if url:
+        candidates = with_retry(fn)
+        if not candidates:
+            continue
+        # Do not let one forbidden/broken candidate poison the provider. Start
+        # at the requested slot for scene diversity, then try remaining results.
+        ordered = candidates[slot:] + candidates[:slot]
+        for url in ordered:
             r = _save(url, "rv", "vid", query, orient, slot, src)
             if r[0]:
                 return r
