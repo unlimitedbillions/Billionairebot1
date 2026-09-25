@@ -99,6 +99,29 @@ def check_scene_structure(rendered):
     return True, "scene narration inputs valid"
 
 
+def probe_video(path):
+    """Return (ok, detail) only when ffprobe sees a real video stream with duration."""
+    if not path.exists():
+        return False, "missing"
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return False, "ffprobe unavailable"
+    try:
+        p = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_type,duration",
+             "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=15, check=True,
+        )
+        data = json.loads(p.stdout or "{}")
+        stream = (data.get("streams") or [None])[0]
+        duration = float(stream.get("duration", 0) or 0) if stream else 0.0
+        return bool(stream and stream.get("codec_type") == "video" and duration > 0), \\
+            f"{stream.get('codec_type', 'none') if stream else 'none'}:{duration:.2f}s"
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
+        return False, "unreadable media"
+
+
 def gather():
     source, rendered = load_jobs()
     man = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else None
@@ -116,8 +139,10 @@ def gather():
                         imgs_ok += 1
                 elif sc.get("type") == "broll":
                     vids_tot += 1
-                    if sc.get("asset_video") and (ROOT / sc["asset_video"]).exists():
-                        vids_ok += 1
+                    if sc.get("asset_video"):
+                        valid, _detail = probe_video(ROOT / sc["asset_video"])
+                        if valid:
+                            vids_ok += 1
 
     audio_ok = True
     try:
@@ -137,6 +162,7 @@ def gather():
         ("Audio", audio_ok, "edge-tts"),
         ("Fonts", bool(shutil.which("fc-list")), ""),
         ("FFmpeg", bool(shutil.which("ffmpeg")), ""),
+        ("FFprobe", bool(shutil.which("ffprobe")), ""),
         ("Remotion browser", bool(shutil.which("node")) and (ROOT / "node_modules" / "@remotion" / "cli").exists(), "node+remotion"),
     ]
 
