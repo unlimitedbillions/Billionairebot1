@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 JOBS = ROOT / "input" / "scripts" / "render-jobs.json"
 SRC = ROOT / "input" / "scripts" / "billionaire-stories.json"
 MANIFEST = ROOT / "cache" / "assets.json"
-BANDS = {"short": (100, 175), "long": (360, 440)}
+SHORT_WORD_BAND = (100, 175)
+LONG_MIN_WORDS = 540  # ~120s at 4.5 words/sec; no upper bound
 W = 30
 
 
@@ -29,9 +30,9 @@ def gather():
     
     scenes = sum(len(re.findall(r"\[Visual:", j.get("script", ""))) for j in jobs)
     narr_ok = bool(jobs) and all(
-        BANDS["short"][0] <= words(j.get("script", "")) <= BANDS["short"][1] 
+        SHORT_WORD_BAND[0] <= words(j.get("script", "")) <= SHORT_WORD_BAND[1] 
         if j["id"].endswith("-short") 
-        else BANDS["long"][0] <= words(j.get("script", "")) <= BANDS["long"][1] 
+        else words(j.get("script", "")) >= LONG_MIN_WORDS 
         for j in jobs
     )
     
