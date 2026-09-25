@@ -239,7 +239,7 @@ def download(url, dest):
 
 
 def _save(url, prefix, kind, query, orient, slot, source):
-    ext = ".mp4" if prefix == "vv" else (".png" if url.lower().split("?")[0].endswith(".png") else ".jpg")
+    ext = ".mp4" if prefix in ("vv", "rv") else (".png" if url.lower().split("?")[0].endswith(".png") else ".jpg")
     dest = VIS / f"{prefix}-{h(kind + '|' + query + '|' + orient + '|' + str(slot))}{ext}"
     if download(url, dest):
         return dest.name, source
@@ -294,7 +294,7 @@ def fetch_video(query, orient, slot):
                     ("archive", lambda: archive_videos(query))):
         url = _pick(with_retry(fn), slot)
         if url:
-            r = _save(url, "vv", "vid", query, orient, slot, src)
+            r = _save(url, "rv", "vid", query, orient, slot, src)
             if r[0]:
                 return r
 
@@ -325,7 +325,7 @@ def assign(tag_val, orient, blocked=None):
     # includes the slot in its hash, so compute the exact cache filename here.
     ext_candidates = [".mp4"] if kind == "video" else [".jpg", ".png"]
     for slot in range(MAX_REUSE):
-        stem = ("vv-" if kind == "video" else "va-") + h(
+        stem = ("rv-" if kind == "video" else "va-") + h(
             f"{kind}|{query}|{orient}|{slot}"
         )
         for ext in ext_candidates:
@@ -345,7 +345,7 @@ def assign(tag_val, orient, blocked=None):
     used_stems = {Path(f).stem for f in usage}
     slot = 0
     while True:
-        probe = ("vv-" if kind == "video" else "va-") + h(
+        probe = ("rv-" if kind == "video" else "va-") + h(
             f"{kind}|{query}|{orient}|{slot}"
         )
         if probe not in used_stems:
