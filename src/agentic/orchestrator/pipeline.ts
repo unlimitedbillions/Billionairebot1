@@ -536,9 +536,11 @@ export async function runAgenticPipeline(
                 }
             }
 
-            // Phase 2: fall back to the image pool (built earlier from topic search)
-            const pool = await getImagePool();
-            if (pool.length > 0) {
+            // Phase 2: image pooling is valid only for image scenes.
+            // A video scene must never silently downgrade to a still image.
+            if (kind !== 'video') {
+                const pool = await getImagePool();
+                if (pool.length > 0) {
                 const pick = pool[sceneIndex % pool.length];
                 const DEAD_HOSTS = /flickr\.com|staticflickr\.com|live\.staticflickr/i;
                 if (pick && pick.url && !DEAD_HOSTS.test(pick.url)) {
@@ -555,7 +557,9 @@ export async function runAgenticPipeline(
                         },
                     ];
                 }
+                }
             }
+            if (kind === 'video') return [];
             const ph = makePlaceholder(keywords, kind);
             return [
                 {
@@ -916,7 +920,8 @@ export async function runAgenticPipeline(
     let offlineFallback = false;
     if (!gate.pass) {
         const hasVisuals = candidates.some((c) => c.kind !== 'music' && c.url);
-        if (!hasVisuals) {
+        const requiresRealVideo = plan.scenes.some((s) => s.visualPreference === 'video');
+        if (!requiresRealVideo && !hasVisuals) {
             try {
                 const bundled = await import('../media/bundled-media.js');
                 const check = bundled.isOfflineModeAvailable ?? bundled.default?.isOfflineModeAvailable;
