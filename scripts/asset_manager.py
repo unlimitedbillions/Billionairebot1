@@ -298,12 +298,9 @@ def fetch_video(query, orient, slot):
             if r[0]:
                 return r
 
-    # never a bare image for b-roll: build a motion clip from whatever image won
-    img_name, _ = fetch_image(query, orient, slot)
-    if img_name:
-        dest = VIS / f"vv-{h('vid|' + query + '|' + orient + '|' + str(slot))}.mp4"
-        if generated_clip(VIS / img_name, dest):
-            return dest.name, "generated-clip"
+    # Documentary b-roll must be actual footage. Never turn a still image into
+    # motion video. If no real footage provider returns a usable clip, leave the
+    # scene unresolved so preflight fails instead of shipping fake footage.
     return None, "missing"
 
 
@@ -322,7 +319,7 @@ def assign(tag_val, orient, blocked=None):
     else:
         kind, query = "video", tag_val
 
-    base = ("va-" if kind == "image" else "vv-") + h(f"{kind}|{query}|{orient}")
+    base = ("va-" if kind == "image" else "rv-") + h(f"{kind}|{query}|{orient}")
 
     # Reuse restored/local assets before any network call. The saved filename
     # includes the slot in its hash, so compute the exact cache filename here.
