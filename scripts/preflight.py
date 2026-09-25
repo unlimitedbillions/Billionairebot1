@@ -109,13 +109,13 @@ def probe_video(path):
     try:
         p = subprocess.run(
             [ffprobe, "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=codec_type,duration",
+             "-show_entries", "stream=codec_type:format=duration",
              "-of", "json", str(path)],
             capture_output=True, text=True, timeout=15, check=True,
         )
         data = json.loads(p.stdout or "{}")
         stream = (data.get("streams") or [None])[0]
-        duration = float(stream.get("duration", 0) or 0) if stream else 0.0
+        duration = float((data.get("format") or {}).get("duration") or 0)
         return bool(stream and stream.get("codec_type") == "video" and duration > 0), \
             f"{stream.get('codec_type', 'none') if stream else 'none'}:{duration:.2f}s"
     except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
