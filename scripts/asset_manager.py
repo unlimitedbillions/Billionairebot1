@@ -29,7 +29,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import requests
 
@@ -45,6 +45,7 @@ PEXELS_KEY = os.getenv("PEXELS_API_KEY", "").strip()
 API_T = 7            # spec: ~6-8s
 RETRY = 1            # max 1 retry per source
 MAX_REUSE = 2        # one file serves at most 2 scenes
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi", ".mpeg", ".mpg", ".m2ts", ".mts", ".ts", ".ogv", ".3gp", ".flv", ".wmv", ".asf"}
 DL_T = 20            # keep asset prep bounded; local/generated fallbacks handle misses
 AI_T = 40            # key-less AI image timeout
 WPS = 3.0
@@ -62,6 +63,32 @@ FACE_KEYWORDS = ["portrait", "face", "head", "musk", "bezos", "gates", "jobs",
 def is_face_query(query):
     q = query.lower()
     return any(k in q for k in FACE_KEYWORDS)
+
+
+STOPWORDS = {"the", "and", "for", "with", "from", "over", "into", "this", "that", "young", "old", "night", "day"}
+
+
+def query_terms(query):
+    return {w for w in re.findall(r"[a-z0-9]+", provider_query(query).lower()) if len(w) >= 4 and w not in STOPWORDS}
+
+
+def candidate_is_relevant(candidate, query):
+    """Reject provider results whose descriptive title is clearly unrelated.
+    Providers without descriptive titles remain eligible; media validation still
+    requires a real playable video.
+    """
+    if not isinstance(candidate, dict):
+        return True
+    text = str(candidate.get("text") or "").lower()
+    terms = query_terms(query)
+    if not text or not terms:
+        return True
+    tokens = set(re.findall(r"[a-z0-9]+", unquote(text)))
+    return bool(tokens & terms)
+
+
+def candidate_url(candidate):
+    return candidate.get("url") if isinstance(candidate, dict) else candidate
 
 
 def log(m):
@@ -159,7 +186,7 @@ def wikimedia_videos(query):
         size = int(ii.get("size") or 0)
         url = ii.get("url")
         if url and mime.startswith("video/") and (size == 0 or size <= 60_000_000):
-            out.append(url)
+            out.append({"url": url, "text": p.get("title") or p.get("pageid", "")})
     return out
 
 
@@ -182,13 +209,17 @@ def archive_videos(query):
             m = get(f"https://archive.org/metadata/{ident}")
             candidates = [
                 f for f in m.get("files", [])
-                if f.get("name", "").lower().endswith(".mp4")
+                if Path(f.get("name", "")).suffix.lower() in VIDEO_EXTENSIONS
                 and int(f.get("size", 0) or 0) < 60_000_000
             ]
             # Keep several candidates from each item. Archive can expose one
             # forbidden/broken derivative while another derivative is usable.
+            title = str(doc.get("title") or ident)
             for f in candidates[:4]:
-                out.append(f"https://archive.org/download/{ident}/{quote(f['name'], safe='')}")
+                out.append({
+                    "url": f"https://archive.org/download/{ident}/{quote(f['name'], safe='')}",
+                    "text": f"{title} {f.get('name', '')}",
+                })
         except Exception:
             continue
     return out
@@ -279,7 +310,7 @@ def download(url, dest):
             if dest.suffix in (".jpg", ".jpeg") and not _is_jpeg(tmp):
                 tmp.unlink(missing_ok=True)
                 return False
-            if dest.suffix in (".mp4", ".webm", ".mov", ".mkv") and not _is_video(tmp):
+            if dest.suffix in VIDEO_EXTENSIONS and not _is_video(tmp):
                 tmp.unlink(missing_ok=True)
                 log(f"invalid video rejected: {url}")
                 return False
@@ -293,7 +324,7 @@ def download(url, dest):
 def _save(url, prefix, kind, query, orient, slot, source):
     path_suffix = Path(url.split("?", 1)[0]).suffix.lower()
     if prefix in ("vv", "rv"):
-        ext = path_suffix if path_suffix in (".mp4", ".webm", ".mov", ".mkv") else ".mp4"
+        ext = path_suffix if path_suffix in VIDEO_EXTENSIONS else ".mp4"
     else:
         ext = ".png" if path_suffix == ".png" else ".jpg"
     dest = VIS / f"{prefix}-{h(kind + '|' + query + '|' + orient + '|' + str(slot))}{ext}"
@@ -352,10 +383,17 @@ def fetch_video(query, orient, slot):
         candidates = with_retry(fn)
         if not candidates:
             continue
-        # Do not let one forbidden/broken candidate poison the provider. Start
-        # at the requested slot for scene diversity, then try remaining results.
-        ordered = candidates[slot:] + candidates[:slot]
-        for url in ordered:
+        # Do not let one forbidden/broken candidate poison the provider. Also
+        # reject descriptive results that do not overlap the requested scene.
+        relevant = [c for c in candidates if candidate_is_relevant(c, query)]
+        if not relevant:
+            log(f"  {src}: no semantically relevant candidates for {query!r}")
+            continue
+        ordered = relevant[slot:] + relevant[:slot]
+        for candidate in ordered:
+            url = candidate_url(candidate)
+            if not url:
+                continue
             r = _save(url, "rv", "vid", query, orient, slot, src)
             if r[0]:
                 return r
@@ -385,7 +423,7 @@ def assign(tag_val, orient, blocked=None):
 
     # Reuse restored/local assets before any network call. The saved filename
     # includes the slot in its hash, so compute the exact cache filename here.
-    ext_candidates = [".mp4", ".webm", ".mov", ".mkv"] if kind == "video" else [".jpg", ".png"]
+    ext_candidates = sorted(VIDEO_EXTENSIONS) if kind == "video" else [".jpg", ".png"]]
     for slot in range(MAX_REUSE):
         stem = ("rv-" if kind == "video" else "va-") + h(
             f"{kind}|{query}|{orient}|{slot}"
