@@ -523,6 +523,13 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
         // No stock candidates for this scene → generate an offline fallback
         // (asset-creator / ffmpeg) instead of leaving the scene blank.
         if (fetched.length === 0) {
+            // Documentary video scenes must not be satisfied by generated
+            // still/gradient MP4s. Leave them unresolved so the gate fails
+            // honestly instead of shipping fake footage.
+            if (kind === 'video') {
+                console.warn('scene ' + i + ': no real video candidate available');
+                continue;
+            }
             const fb = generateFallbackVisual(scene, kind, dir, 0);
             if (fb) {
                 candidates.push({
@@ -613,7 +620,7 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
                             // asset instead of a blank/undefined path.
                             if (downloaded1) {
                                 localPath = downloaded1;
-                            } else {
+                            } else if (kind !== 'video') {
                                 const fb = generateFallbackVisual(scene, kind, dir, c);
                                 if (fb) {
                                     localPath = fb.localPath;
@@ -635,7 +642,7 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
                         const downloaded2 = await downloadWithTimeout(deps, f.url, dir, filename);
                         if (downloaded2) {
                             localPath = downloaded2;
-                        } else {
+                        } else if (kind !== 'video') {
                             const fb = generateFallbackVisual(scene, kind, dir, c);
                             if (fb) {
                                 localPath = fb.localPath;
@@ -677,6 +684,7 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
                     : kind;
                 if (effectiveKind !== kind) {
                     console.warn(`⚠ scene ${i} cand ${c + 1}: requested ${kind} but got ${actualExt} — reclassified as ${effectiveKind}`);
+                    if (kind === 'video') return;
                 }
                 // OPT-IN AI verify (acquire stage): score the materialised
                 // candidate with the agent's own model. A non-null FAILING score
