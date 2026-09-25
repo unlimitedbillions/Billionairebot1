@@ -72,6 +72,15 @@ def h(s):
     return hashlib.sha1(s.encode()).hexdigest()[:10]
 
 
+def provider_query(query):
+    q = query.strip()
+    while True:
+        cleaned = re.sub(r"^(?:pexels|wikimedia|archive|openverse)\s*:\s*", "", q, flags=re.I)
+        if cleaned == q:
+            return q
+        q = cleaned
+
+
 def get(url, params=None, headers=None):
     req_headers = dict(HTTP_HEADERS)
     if headers:
@@ -96,6 +105,7 @@ def with_retry(fn, *a):
 def pexels_videos(query, orient):
     if not PEXELS_KEY:
         return []
+    query = provider_query(query)
     d = get("https://api.pexels.com/videos/search",
             {"query": query, "orientation": orient, "per_page": 10},
             {"Authorization": PEXELS_KEY})
@@ -112,6 +122,7 @@ def pexels_videos(query, orient):
 def pexels_images(query, orient):
     if not PEXELS_KEY:
         return []
+    query = provider_query(query)
     d = get("https://api.pexels.com/v1/search",
             {"query": query, "orientation": orient, "per_page": 3},
             {"Authorization": PEXELS_KEY})
@@ -120,6 +131,7 @@ def pexels_images(query, orient):
 
 # ---------------- KEY-LESS PROVIDERS -----------------------------------------
 def wikimedia_images(query):
+    query = provider_query(query)
     d = get("https://commons.wikimedia.org/w/api.php", {
         "action": "query", "format": "json", "generator": "search",
         "gsrsearch": f"filetype:bitmap {query}", "gsrnamespace": "6",
@@ -133,12 +145,31 @@ def wikimedia_images(query):
     return out
 
 
+def wikimedia_videos(query):
+    query = provider_query(query)
+    d = get("https://commons.wikimedia.org/w/api.php", {
+        "action": "query", "format": "json", "generator": "search",
+        "gsrsearch": f"filetype:video {query}", "gsrnamespace": "6",
+        "gsrlimit": "8", "prop": "imageinfo", "iiprop": "url|mime|size"})
+    pages = (d.get("query") or {}).get("pages") or {}
+    out = []
+    for p in sorted(pages.values(), key=lambda x: x.get("index", 99)):
+        ii = (p.get("imageinfo") or [{}])[0]
+        mime = ii.get("mime", "")
+        size = int(ii.get("size") or 0)
+        url = ii.get("url")
+        if url and mime.startswith("video/") and (size == 0 or size <= 60_000_000):
+            out.append(url)
+    return out
+
+
 def openverse_images(query):
     d = get("https://api.openverse.org/v1/images/", {"q": query, "page_size": 3})
     return [r["url"] for r in d.get("results", []) if r.get("url")]
 
 
 def archive_videos(query):
+    query = provider_query(query)
     d = get("https://archive.org/advancedsearch.php", {
         "q": f"({query}) AND mediatype:(movies)", "fl[]": "identifier",
         "rows": "2", "output": "json"})
@@ -211,6 +242,18 @@ def _is_jpeg(p):
         return f.read(3) == b"\xff\xd8\xff"
 
 
+def _is_video(p):
+    try:
+        probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type,duration", "-of", "json", str(p)], capture_output=True, text=True, timeout=10, check=False)
+        if probe.returncode != 0:
+            return False
+        data = json.loads(probe.stdout or "{}")
+        stream = (data.get("streams") or [{}])[0]
+        return stream.get("codec_type") == "video" and float(stream.get("duration") or 0) > 0
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return False
+
+
 def download(url, dest):
     try:
         with requests.get(url, stream=True, headers=HTTP_HEADERS, timeout=DL_T if "pollinations" not in url else AI_T) as r:
@@ -222,6 +265,10 @@ def download(url, dest):
             if dest.suffix in (".jpg", ".jpeg") and not _is_jpeg(tmp):
                 tmp.unlink(missing_ok=True)
                 return False
+            if dest.suffix in (".mp4", ".webm", ".mov", ".mkv") and not _is_video(tmp):
+                tmp.unlink(missing_ok=True)
+                log(f"invalid video rejected: {url}")
+                return False
             tmp.replace(dest)
         return dest.exists() and dest.stat().st_size > 5000
     except Exception as e:
@@ -230,7 +277,11 @@ def download(url, dest):
 
 
 def _save(url, prefix, kind, query, orient, slot, source):
-    ext = ".mp4" if prefix in ("vv", "rv") else (".png" if url.lower().split("?")[0].endswith(".png") else ".jpg")
+    path_suffix = Path(url.split("?", 1)[0]).suffix.lower()
+    if prefix in ("vv", "rv"):
+        ext = path_suffix if path_suffix in (".mp4", ".webm", ".mov", ".mkv") else ".mp4"
+    else:
+        ext = ".png" if path_suffix == ".png" else ".jpg"
     dest = VIS / f"{prefix}-{h(kind + '|' + query + '|' + orient + '|' + str(slot))}{ext}"
     if download(url, dest):
         return dest.name, source
@@ -282,6 +333,7 @@ def fetch_image(query, orient, slot):
 
 def fetch_video(query, orient, slot):
     for src, fn in (("pexels", lambda: pexels_videos(query, orient)),
+                    ("wikimedia", lambda: wikimedia_videos(query)),
                     ("archive", lambda: archive_videos(query))):
         url = _pick(with_retry(fn), slot)
         if url:
