@@ -249,12 +249,21 @@ def _is_jpeg(p):
 
 def _is_video(p):
     try:
-        probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type,duration", "-of", "json", str(p)], capture_output=True, text=True, timeout=10, check=False)
+        # WebM/Matroska files commonly omit duration at the stream level while
+        # ffprobe still exposes a valid container duration. Validate both the
+        # video stream and the container duration so genuine Wikimedia clips
+        # are not rejected as "invalid video".
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_type:format=duration",
+             "-of", "json", str(p)],
+            capture_output=True, text=True, timeout=10, check=False)
         if probe.returncode != 0:
             return False
         data = json.loads(probe.stdout or "{}")
         stream = (data.get("streams") or [{}])[0]
-        return stream.get("codec_type") == "video" and float(stream.get("duration") or 0) > 0
+        duration = float((data.get("format") or {}).get("duration") or 0)
+        return stream.get("codec_type") == "video" and duration > 0
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
         return False
 
@@ -376,7 +385,7 @@ def assign(tag_val, orient, blocked=None):
 
     # Reuse restored/local assets before any network call. The saved filename
     # includes the slot in its hash, so compute the exact cache filename here.
-    ext_candidates = [".mp4"] if kind == "video" else [".jpg", ".png"]
+    ext_candidates = [".mp4", ".webm", ".mov", ".mkv"] if kind == "video" else [".jpg", ".png"]
     for slot in range(MAX_REUSE):
         stem = ("rv-" if kind == "video" else "va-") + h(
             f"{kind}|{query}|{orient}|{slot}"
