@@ -48,6 +48,7 @@ MAX_REUSE = 2        # one file serves at most 2 scenes
 DL_T = 20            # keep asset prep bounded; local/generated fallbacks handle misses
 AI_T = 40            # key-less AI image timeout
 WPS = 3.0
+HTTP_HEADERS = {"User-Agent": "BillionaireBot/1.0 (https://github.com/unlimitedbillions/Billionairebot1)"}
 
 VISUAL_RE = re.compile(r"\[Visual:\s*(?P<val>[^\]]+?)\s*\]")
 usage = {}
@@ -72,7 +73,10 @@ def h(s):
 
 
 def get(url, params=None, headers=None):
-    r = requests.get(url, params=params, headers=headers, timeout=API_T)
+    req_headers = dict(HTTP_HEADERS)
+    if headers:
+        req_headers.update(headers)
+    r = requests.get(url, params=params, headers=req_headers, timeout=API_T)
     r.raise_for_status()
     return r.json()
 
@@ -147,7 +151,7 @@ def archive_videos(query):
             m = get(f"https://archive.org/metadata/{ident}")
             for f in m.get("files", []):
                 if f.get("name", "").endswith(".mp4") and int(f.get("size", 0)) < 60_000_000:
-                    out.append(f"https://archive.org/download/{ident}/{f['name']}")
+                    out.append(f"https://archive.org/download/{ident}/{quote(f['name'], safe='')}")
                     break
         except Exception:
             continue
@@ -209,7 +213,7 @@ def _is_jpeg(p):
 
 def download(url, dest):
     try:
-        with requests.get(url, stream=True, timeout=DL_T if "pollinations" not in url else AI_T) as r:
+        with requests.get(url, stream=True, headers=HTTP_HEADERS, timeout=DL_T if "pollinations" not in url else AI_T) as r:
             r.raise_for_status()
             tmp = dest.with_suffix(dest.suffix + ".part")
             with open(tmp, "wb") as f:
@@ -317,7 +321,7 @@ def assign(tag_val, orient, blocked=None):
         )
         for ext in ext_candidates:
             candidate = stem + ext
-            if candidate in PREEXISTING and candidate not in blocked and (VIS / candidate).exists():
+            if (VIS / candidate).exists() and (kind == "image" or candidate in PREEXISTING) and (kind == "image" or candidate not in blocked):
                 used = usage.get(candidate, 0)
                 if used < MAX_REUSE:
                     usage[candidate] = used + 1
@@ -421,16 +425,19 @@ def main():
     ok_i = sum(1 for s in imgs if s["asset"] and (ROOT / s["asset"]).exists())
     ok_v = sum(1 for s in vids if s["asset_video"] and (ROOT / s["asset_video"]).exists())
     uniq = len({s.get("asset") or s.get("asset_video") for s in scenes})
-    duplicate_assets = sum(
-        1 for e in episodes
+    reuse_counts = [
+        count
+        for e in episodes
         for count in [{
             a: sum(1 for s in e["scenes"] if (s.get("asset") or s.get("asset_video")) == a)
             for a in {s.get("asset") or s.get("asset_video") for s in e["scenes"] if (s.get("asset") or s.get("asset_video"))}
-        }][0].values() if count > 1
-    )
-    log(f"images {ok_i}/{len(imgs)} | clips {ok_v}/{len(vids)} | unique files {uniq} | duplicate assets within episode {duplicate_assets} | reuse<= {MAX_REUSE}/file")
-    if duplicate_assets:
-        sys.exit("[assets] duplicate asset policy violated: an episode contains a repeated source asset")
+        }][0].values()
+    ]
+    duplicate_assets = sum(1 for count in reuse_counts if 1 < count <= MAX_REUSE)
+    reuse_violations = sum(1 for count in reuse_counts if count > MAX_REUSE)
+    log(f"images {ok_i}/{len(imgs)} | clips {ok_v}/{len(vids)} | unique files {uniq} | reused files {duplicate_assets} | reuse<= {MAX_REUSE}/file")
+    if reuse_violations:
+        sys.exit(f"[assets] reuse policy violated: {reuse_violations} file(s) used more than {MAX_REUSE} times")
     log(f"manifest -> {MANIFEST.relative_to(ROOT)} | renderjobs -> {OUT_JOBS.relative_to(ROOT)}")
     if ok_i < len(imgs) or ok_v < len(vids):
         sys.exit(1)
