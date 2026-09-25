@@ -116,7 +116,7 @@ def probe_video(path):
         data = json.loads(p.stdout or "{}")
         stream = (data.get("streams") or [None])[0]
         duration = float(stream.get("duration", 0) or 0) if stream else 0.0
-        return bool(stream and stream.get("codec_type") == "video" and duration > 0), \\
+        return bool(stream and stream.get("codec_type") == "video" and duration > 0), \
             f"{stream.get('codec_type', 'none') if stream else 'none'}:{duration:.2f}s"
     except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
         return False, "unreadable media"
