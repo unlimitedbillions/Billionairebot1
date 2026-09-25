@@ -12,7 +12,8 @@ Rules:
                     -> POLLINATIONS AI IMAGE (free, no key, no signup;
                        scene imagery only, NEVER people/faces)
                     -> LoremFlickr keyword photos (free, no key)
-                    -> bundled fallback -> ffmpeg gradient / motion clip
+                    -> bundled image fallback / ffmpeg gradient image
+  * If a real video clip cannot be resolved, the b-roll scene FAILS preparation.
   * Face safety: queries that look like a real person NEVER go to AI or random
     photo services; they resolve from Wikimedia only, else bundled silhouette,
     else gradient card.
@@ -198,20 +199,6 @@ def gradient_image(dest, variant=0):
         log(f"gradient gen failed: {e}")
         return False
 
-
-def generated_clip(image_path, dest, seconds=5):
-    vf = ("scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,"
-          "zoompan=z='min(zoom+0.0008,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-          f":d={int(seconds * 24)}:s=1280x720:fps=24")
-    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", str(image_path), "-vf", vf,
-           "-t", str(seconds), "-an", "-c:v", "libx264", "-preset", "ultrafast",
-           "-pix_fmt", "yuv420p", str(dest)]
-    try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return dest.exists()
-    except Exception as e:
-        log(f"clip gen failed: {e}")
-        return False
 
 
 # ---------------- DOWNLOAD + VALIDATE ----------------------------------------
