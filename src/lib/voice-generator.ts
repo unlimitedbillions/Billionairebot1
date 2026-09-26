@@ -79,7 +79,7 @@ function getAudioDuration(filePath: string, text: string): number {
     try {
         const result = runFfprobe(['-v', 'quiet', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath]);
         const duration = parseFloat(result.trim());
-        if (!isNaN(duration) && duration > 0) return Math.ceil(duration);
+        if (!isNaN(duration) && duration > 0) return duration;
     } catch {
         // fall through to estimate
     }
