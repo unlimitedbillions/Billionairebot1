@@ -211,7 +211,8 @@ export async function runAgenticPipeline(
     const LONG_FORM_MAX_WORDS = 800;
     const countWords = (text: string) => text.trim().split(/\\s+/).filter(Boolean).length;
     if (isLongForm) {
-        if (countWords(finalScript) < LONG_FORM_MIN_WORDS) {
+        const initialWordCount = countWords(finalScript);
+        if (initialWordCount < LONG_FORM_MIN_WORDS || initialWordCount > LONG_FORM_MAX_WORDS) {
             try {
                 const expanded = await bridge.completeJSON<{ script: string }>(
                     'Expand this long-form billionaire story into NATURAL SPOKEN NARRATION of EXACTLY 780 TO 800 WORDS (target 790). Preserve every original fact and event. Add only relevant context, transitions, consequences, and concrete details supported by the supplied story. Do not repeat the conclusion. Return one continuous narration script with no headings, no visual tags, and no hashtags. Stay within the 780–800 word range.',
