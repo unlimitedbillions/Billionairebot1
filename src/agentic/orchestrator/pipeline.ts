@@ -745,8 +745,9 @@ export async function runAgenticPipeline(
     // fake frames, or duration-gate changes are permitted.
     const longFormDurationReport = {
         requiredSec: longFormRequiredSec,
-        targetWords: isLongForm ? Math.ceil(longFormRequiredSec * 4.5 * 1.05) : 0,
-        minimumAcceptedWords: isLongForm ? Math.floor(Math.ceil(longFormRequiredSec * 4.5 * 1.05) * 0.95) : 0,
+        targetWords: isLongForm ? LONG_FORM_TARGET_WORDS : 0,
+        minimumAcceptedWords: isLongForm ? LONG_FORM_MIN_WORDS : 0,
+        maximumAcceptedWords: isLongForm ? LONG_FORM_MAX_WORDS : 0,
         ttsMeasuredSec: 0,
         correctionAttempts: 0,
         passedBeforeVisualAcquisition: !isLongForm,
@@ -767,11 +768,10 @@ export async function runAgenticPipeline(
             longFormDurationReport.correctionAttempts += 1;
 
             const currentWords = countWords(plan.scenes.map((s) => s.voiceoverText).join(' '));
-            const speechRate = currentWords > 0 && measuredSec > 0 ? currentWords / measuredSec : 4.5;
             const deficitSec = longFormRequiredSec - measuredSec;
-            const targetWords = Math.max(
-                longFormDurationReport.targetWords,
-                currentWords + Math.ceil(deficitSec * Math.max(3.8, Math.min(speechRate, 4.8)) * 1.25),
+            const targetWords = Math.min(
+                longFormDurationReport.maximumAcceptedWords,
+                Math.max(longFormDurationReport.targetWords, LONG_FORM_TARGET_WORDS),
             );
             logInfo(
                 'LONGFORM_TTS_CORRECTION attempt=' + longFormDurationReport.correctionAttempts +
@@ -782,7 +782,7 @@ export async function runAgenticPipeline(
             try {
                 const source = plan.scenes.map((s, i) => ({ scene: i + 1, narration: s.voiceoverText }));
                 const expanded = await bridge.completeJSON<{ scenes: { scene: number; narration: string }[] }>(
-                    'Expand this scene-by-scene billionaire narration to add enough NATURAL SPOKEN CONTENT to exceed the required runtime. Preserve the existing facts, scene order, and tone. Add relevant context, concrete details, transitions, consequences, and connective narration. Do not pad with silence, repetition, filler, headings, visual tags, or meta commentary. Return EXACTLY one object for EVERY input scene, preserving scene numbers 1 through N. Every narration field must be a non-empty complete replacement for that scene. Output JSON only.',
+                    'Expand this scene-by-scene billionaire narration while keeping the COMPLETE NARRATION BETWEEN 780 AND 800 WORDS (target 790). Preserve the existing facts, scene order, and tone. Add relevant context, concrete details, transitions, consequences, and connective narration. Do not pad with silence, repetition, filler, headings, visual tags, or meta commentary. Return EXACTLY one object for EVERY input scene, preserving scene numbers 1 through N. Every narration field must be a non-empty complete replacement for that scene. Output JSON only.',
                     JSON.stringify({ title: req.title, topic: req.topic, requiredSec: longFormRequiredSec, measuredSec, targetWords, sceneCount: source.length, scenes: source }),
                     '{"scenes":[{"scene":1,"narration":"complete narration"}]}',
                 );
@@ -806,7 +806,7 @@ export async function runAgenticPipeline(
                 }
 
                 const candidateWords = expanded.scenes.reduce((n, s) => n + countWords(s.narration || ''), 0);
-                if (candidateWords < Math.max(currentWords + 40, longFormDurationReport.minimumAcceptedWords)) {
+                if (candidateWords < longFormDurationReport.minimumAcceptedWords || candidateWords > longFormDurationReport.maximumAcceptedWords) {
                     logWarn(
                         '⚠ long-form correction rejected on attempt ' +
                         longFormDurationReport.correctionAttempts +
