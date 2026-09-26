@@ -751,49 +751,90 @@ export async function runAgenticPipeline(
         longFormDurationReport.ttsMeasuredSec = measuredSec;
         logInfo('LONGFORM_TTS_CHECK attempt=1 measured=' + measuredSec.toFixed(1) + 's required=' + longFormRequiredSec + 's');
 
-        if (measuredSec < longFormRequiredSec) {
-            longFormDurationReport.correctionAttempts = 1;
+        // A single LLM correction was too brittle: several runs returned malformed
+        // or incomplete scene arrays, and a valid expansion could still undershoot
+        // the measured TTS runtime. Keep the 120s gate hard, but allow up to three
+        // measured correction passes. Each pass is accepted only after fresh TTS
+        // measurement proves the runtime requirement.
+        const MAX_CORRECTION_ATTEMPTS = 3;
+        while (measuredSec < longFormRequiredSec && longFormDurationReport.correctionAttempts < MAX_CORRECTION_ATTEMPTS) {
+            longFormDurationReport.correctionAttempts += 1;
+
             const currentWords = countWords(plan.scenes.map((s) => s.voiceoverText).join(' '));
             const speechRate = currentWords > 0 && measuredSec > 0 ? currentWords / measuredSec : 4.5;
             const deficitSec = longFormRequiredSec - measuredSec;
             const targetWords = Math.max(
                 longFormDurationReport.targetWords,
-                currentWords + Math.ceil(deficitSec * Math.max(3.8, Math.min(speechRate, 4.8)) * 1.10),
+                currentWords + Math.ceil(deficitSec * Math.max(3.8, Math.min(speechRate, 4.8)) * 1.25),
             );
-            logInfo('LONGFORM_TTS_CORRECTION measured=' + measuredSec.toFixed(1) + 's deficit=' + deficitSec.toFixed(1) + 's currentWords=' + currentWords + ' targetWords=' + targetWords);
+            logInfo(
+                'LONGFORM_TTS_CORRECTION attempt=' + longFormDurationReport.correctionAttempts +
+                ' measured=' + measuredSec.toFixed(1) + 's deficit=' + deficitSec.toFixed(1) +
+                's currentWords=' + currentWords + ' targetWords=' + targetWords,
+            );
 
             try {
                 const source = plan.scenes.map((s, i) => ({ scene: i + 1, narration: s.voiceoverText }));
                 const expanded = await bridge.completeJSON<{ scenes: { scene: number; narration: string }[] }>(
-                    'Expand this scene-by-scene billionaire narration to add enough NATURAL SPOKEN CONTENT to exceed the required runtime. Preserve the existing facts, scene order, and tone. Add relevant context, concrete details, transitions, consequences, and connective narration. Do not pad with silence, repetition, filler, headings, visual tags, or meta commentary. Return every scene with its complete replacement narration.',
-                    JSON.stringify({ title: req.title, topic: req.topic, requiredSec: longFormRequiredSec, measuredSec, targetWords, scenes: source }),
-                    '{"scenes":[{"scene":1,"narration":"..."}]}',
+                    'Expand this scene-by-scene billionaire narration to add enough NATURAL SPOKEN CONTENT to exceed the required runtime. Preserve the existing facts, scene order, and tone. Add relevant context, concrete details, transitions, consequences, and connective narration. Do not pad with silence, repetition, filler, headings, visual tags, or meta commentary. Return EXACTLY one object for EVERY input scene, preserving scene numbers 1 through N. Every narration field must be a non-empty complete replacement for that scene. Output JSON only.',
+                    JSON.stringify({ title: req.title, topic: req.topic, requiredSec: longFormRequiredSec, measuredSec, targetWords, sceneCount: source.length, scenes: source }),
+                    '{"scenes":[{"scene":1,"narration":"complete narration"}]}',
                 );
-                if (expanded?.scenes?.length === plan.scenes.length) {
-                    const candidateWords = expanded.scenes.reduce((n, s) => n + countWords(s.narration || ''), 0);
-                    if (candidateWords >= Math.max(currentWords + 40, longFormDurationReport.minimumAcceptedWords)) {
-                        expanded.scenes.forEach((item, i) => { if (item.narration?.trim()) plan.scenes[i].voiceoverText = item.narration.trim(); });
-                        const { runVoiceStage } = await import('../media/voice-controller.js');
-                        const retry = await runVoiceStage(plan, voiceWorkspace, req.voice, (percent, message) => {
-                            emit({ stage: 'voiceover', percent, message: 'duration-correction: ' + message });
-                        }, req.useClonedVoiceId, req.personas);
-                        voiceovers = {
-                            scenes: retry.voices.map((v) => ({ sceneIndex: v.sceneIndex, audioPath: v.audioPath, durationSec: v.durationSec, captionSegments: [] })),
-                            voiceoverDriven: retry.voiceoverDriven,
-                            sidecars: [],
-                            fallbackUsed: retry.fallbackUsed,
-                        };
-                        measuredSec = measureNarration();
-                        longFormDurationReport.ttsMeasuredSec = measuredSec;
-                        logInfo('LONGFORM_TTS_CHECK attempt=2 measured=' + measuredSec.toFixed(1) + 's required=' + longFormRequiredSec + 's');
-                    } else {
-                        logWarn('⚠ long-form correction rejected: ' + candidateWords + ' words is insufficient for target ' + targetWords);
-                    }
-                } else {
-                    logWarn('⚠ long-form correction returned an invalid scene set; keeping first TTS result');
+
+                const validScenes =
+                    Array.isArray(expanded?.scenes) &&
+                    expanded.scenes.length === plan.scenes.length &&
+                    expanded.scenes.every((item, i) =>
+                        Number(item?.scene) === i + 1 &&
+                        typeof item?.narration === 'string' &&
+                        item.narration.trim().length > 0,
+                    );
+
+                if (!validScenes) {
+                    logWarn(
+                        '⚠ long-form correction returned an invalid scene set on attempt ' +
+                        longFormDurationReport.correctionAttempts +
+                        '; retrying with the current narration',
+                    );
+                    continue;
                 }
+
+                const candidateWords = expanded.scenes.reduce((n, s) => n + countWords(s.narration || ''), 0);
+                if (candidateWords < Math.max(currentWords + 40, longFormDurationReport.minimumAcceptedWords)) {
+                    logWarn(
+                        '⚠ long-form correction rejected on attempt ' +
+                        longFormDurationReport.correctionAttempts +
+                        ': ' + candidateWords + ' words is insufficient for target ' + targetWords,
+                    );
+                    continue;
+                }
+
+                expanded.scenes.forEach((item, i) => {
+                    plan.scenes[i].voiceoverText = item.narration.trim();
+                });
+
+                const { runVoiceStage } = await import('../media/voice-controller.js');
+                const retry = await runVoiceStage(plan, voiceWorkspace, req.voice, (percent, message) => {
+                    emit({ stage: 'voiceover', percent, message: 'duration-correction: ' + message });
+                }, req.useClonedVoiceId, req.personas);
+                voiceovers = {
+                    scenes: retry.voices.map((v) => ({ sceneIndex: v.sceneIndex, audioPath: v.audioPath, durationSec: v.durationSec, captionSegments: [] })),
+                    voiceoverDriven: retry.voiceoverDriven,
+                    sidecars: [],
+                    fallbackUsed: retry.fallbackUsed,
+                };
+
+                measuredSec = measureNarration();
+                longFormDurationReport.ttsMeasuredSec = measuredSec;
+                logInfo(
+                    'LONGFORM_TTS_CHECK attempt=' + (longFormDurationReport.correctionAttempts + 1) +
+                    ' measured=' + measuredSec.toFixed(1) + 's required=' + longFormRequiredSec + 's',
+                );
             } catch (e: any) {
-                logWarn('⚠ long-form TTS correction failed: ' + (e?.message ?? e));
+                logWarn(
+                    '⚠ long-form TTS correction failed on attempt ' +
+                    longFormDurationReport.correctionAttempts + ': ' + (e?.message ?? e),
+                );
             }
         }
 
