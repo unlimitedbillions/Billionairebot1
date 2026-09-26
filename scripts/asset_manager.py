@@ -383,6 +383,20 @@ def _is_video(p):
         return False
 
 
+def media_duration(path):
+    """Return the measured media duration in seconds, or 0 when unavailable."""
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        value = float((probe.stdout or "").strip())
+        return value if value > 0 else 0.0
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return 0.0
+
+
 def download(url, dest):
     try:
         with requests.get(url, stream=True, headers=HTTP_HEADERS, timeout=DL_T if "pollinations" not in url else AI_T) as r:
@@ -586,12 +600,24 @@ def process_jobs(jobs):
                 fname, src, kind = assign(val, orient, episode_used_assets)
                 if fname:
                     episode_used_assets.add(fname)
-                scenes.append({"id": f"scene-{n:03d}",
-                               "duration": round(scene_words(line) / WPS, 1),
-                               "type": "portrait" if kind == "image" else "broll",
-                               "asset": f"input/visuals/{fname}" if (fname and kind == "image") else None,
-                               "asset_video": f"input/visuals/{fname}" if (fname and kind == "video") else None,
-                               "source": src, "query": val})
+                scene_record = {"id": f"scene-{n:03d}",
+                                "duration": round(scene_words(line) / WPS, 1),
+                                "type": "portrait" if kind == "image" else "broll",
+                                "asset": f"input/visuals/{fname}" if (fname and kind == "image") else None,
+                                "asset_video": f"input/visuals/{fname}" if (fname and kind == "video") else None,
+                                "source": src, "query": val}
+                # Canonical render-ready segment metadata. The scene duration
+                # remains narration/TTS-controlled; this is the source media's
+                # own measured duration for validation/diagnostics only.
+                if fname and kind == "video":
+                    media_path = VIS / fname
+                    scene_record["visual_segment"] = {
+                        "asset_video": f"input/visuals/{fname}",
+                        "duration": media_duration(media_path),
+                        "scene_id": f"scene-{n:03d}",
+                        "source": src,
+                    }
+                scenes.append(scene_record)
                 return f"[Visual: {fname}]" if fname else m.group(0)
 
             new_lines.append(VISUAL_RE.sub(repl, line))
@@ -620,6 +646,7 @@ def main():
                    "max_reuse_per_file": MAX_REUSE,
                    "semantic_reuse": "last_resort",
                    "motion_fallback_seconds": MOTION_SECONDS,
+                   "visual_segment_schema": "{asset_video,duration,scene_id,source}",
                    "chain": ["exact-cache/reuse", "pexels", "wikimedia", "archive",
                              "relevant-image->motion", "semantic-video-reuse"]},
         "episodes": episodes}, indent=2))
