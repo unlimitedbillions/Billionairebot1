@@ -209,7 +209,7 @@ export async function runAgenticPipeline(
     const LONG_FORM_MIN_WORDS = 780;
     const LONG_FORM_TARGET_WORDS = 790;
     const LONG_FORM_MAX_WORDS = 800;
-    const countWords = (text: string) => text.trim().split(/\\s+/).filter(Boolean).length;
+    const countWords = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
     if (isLongForm) {
         const initialWordCount = countWords(finalScript);
         if (initialWordCount < LONG_FORM_MIN_WORDS || initialWordCount > LONG_FORM_MAX_WORDS) {
