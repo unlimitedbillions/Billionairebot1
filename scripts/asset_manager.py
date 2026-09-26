@@ -3,7 +3,9 @@
 asset_manager.py — PLAN + PREPARE phase (runs BEFORE rendering). 100% FREE / KEYLESS.
 
 Rules:
-  * NEVER images alone: b-roll scenes resolve to VIDEO clips; portraits to images.
+  * Every b-roll scene resolves to a validated MP4; real footage is preferred,
+    but a relevant still can be converted into a subtle motion clip when video
+    providers cannot supply suitable footage.
   * Zero network at render: everything downloaded/generated beforehand.
   * Reuse cap: one file serves at most 2 scenes (MAX_REUSE).
   * Chain (all free):
@@ -13,7 +15,8 @@ Rules:
                        scene imagery only, NEVER people/faces)
                     -> LoremFlickr keyword photos (free, no key)
                     -> bundled image fallback / ffmpeg gradient image
-  * If a real video clip cannot be resolved, the b-roll scene FAILS preparation.
+  * Semantic asset reuse is a LAST-RESORT fallback only, after real video and
+    relevant image->motion fallbacks fail; unrelated assets are never reused.
   * Face safety: queries that look like a real person NEVER go to AI or random
     photo services; they resolve from Wikimedia only, else bundled silhouette,
     else gradient card.
@@ -272,6 +275,87 @@ def gradient_image(dest, variant=0):
 
 
 
+"""Convert a relevant still into a deterministic, render-safe MP4.
+
+The clip is intentionally longer than a typical scene so the renderer can trim
+it to the exact measured TTS duration. The subtle zoom/pan keeps still fallbacks
+from looking like frozen frames.
+"""
+MOTION_SECONDS = 12
+MOTION_FPS = 30
+
+
+def image_to_motion(image_path, query, orient, slot):
+    out = VIS / f"rv-motion-{h('motion|' + query + '|' + orient + '|' + str(slot))}.mp4"
+    tmp = out.with_suffix(".tmp.mp4")
+    vf = (
+        "scale=1280:720:force_original_aspect_ratio=increase,"
+        "crop=1280:720,"
+        "zoompan=z='min(zoom+0.0007,1.10)':"
+        "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+        f"d={MOTION_SECONDS * MOTION_FPS}:s=1280x720:fps={MOTION_FPS},"
+        "format=yuv420p"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-loop", "1", "-i", str(image_path),
+        "-vf", vf, "-t", str(MOTION_SECONDS),
+        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-movflags", "+faststart", str(tmp),
+    ]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=90)
+        if _is_video(tmp) and tmp.stat().st_size > 5000:
+            tmp.replace(out)
+            return out.name
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"image->motion failed for {query!r}: {e}")
+    finally:
+        tmp.unlink(missing_ok=True)
+    return None
+
+
+def semantic_asset_reuse(query, orient, blocked):
+    """Last-resort reuse of an existing video whose scene query is semantically close."""
+    terms = query_terms(query)
+    if not terms:
+        return None
+
+    best = None
+    manifest = {}
+    try:
+        if MANIFEST.exists():
+            manifest = json.loads(MANIFEST.read_text())
+    except (OSError, ValueError):
+        manifest = {}
+
+    for episode in manifest.get("episodes", []):
+        for scene in episode.get("scenes", []):
+            asset = scene.get("asset_video")
+            prior_query = str(scene.get("query") or "")
+            if not asset or not prior_query:
+                continue
+            path = ROOT / asset
+            if not path.exists() or path.name in blocked:
+                continue
+            used = usage.get(path.name, 0)
+            if used >= MAX_REUSE:
+                continue
+            prior_terms = query_terms(prior_query)
+            if not prior_terms:
+                continue
+            overlap = len(terms & prior_terms)
+            score = overlap / max(1, len(terms | prior_terms))
+            if overlap and (best is None or score > best[0]):
+                best = (score, path.name, prior_query)
+
+    if best and best[0] >= 0.25:
+        usage[best[1]] = usage.get(best[1], 0) + 1
+        log(f"  semantic reuse: {best[1]} ({best[0]:.2f} match) for {query!r}")
+        return best[1]
+    return None
+
+
 # ---------------- DOWNLOAD + VALIDATE ----------------------------------------
 def _is_jpeg(p):
     with open(p, "rb") as f:
@@ -376,15 +460,16 @@ def fetch_image(query, orient, slot):
     return None, "missing"
 
 
-def fetch_video(query, orient, slot):
+def fetch_video(query, orient, slot, blocked=None):
+    blocked = blocked or set()
+
+    # Tier 1: real footage from trusted/free providers.
     for src, fn in (("pexels", lambda: pexels_videos(query, orient)),
                     ("wikimedia", lambda: wikimedia_videos(query)),
                     ("archive", lambda: archive_videos(query))):
         candidates = with_retry(fn)
         if not candidates:
             continue
-        # Do not let one forbidden/broken candidate poison the provider. Also
-        # reject descriptive results that do not overlap the requested scene.
         relevant = [c for c in candidates if candidate_is_relevant(c, query)]
         if not relevant:
             log(f"  {src}: no semantically relevant candidates for {query!r}")
@@ -398,9 +483,20 @@ def fetch_video(query, orient, slot):
             if r[0]:
                 return r
 
-    # Documentary b-roll must be actual footage. Never turn a still image into
-    # motion video. If no real footage provider returns a usable clip, leave the
-    # scene unresolved so preflight fails instead of shipping fake footage.
+    # Tier 2: semantic visual fallback. A relevant still is preferable to a
+    # missing scene, and is converted into a real MP4 with subtle motion.
+    image_name, image_src = fetch_image(query, orient, slot)
+    if image_name:
+        motion = image_to_motion(VIS / image_name, query, orient, slot)
+        if motion:
+            return motion, f"{image_src}->motion"
+
+    # Tier 3: semantic reuse is deliberately last. It may reuse only a prior
+    # asset with meaningful query overlap and within the normal reuse cap.
+    reused = semantic_asset_reuse(query, orient, blocked)
+    if reused:
+        return reused, "semantic-reuse"
+
     return None, "missing"
 
 
@@ -423,7 +519,7 @@ def assign(tag_val, orient, blocked=None):
 
     # Reuse restored/local assets before any network call. The saved filename
     # includes the slot in its hash, so compute the exact cache filename here.
-    ext_candidates = sorted(VIDEO_EXTENSIONS) if kind == "video" else [".jpg", ".png"]]
+    ext_candidates = sorted(VIDEO_EXTENSIONS) if kind == "video" else [".jpg", ".png"]
     for slot in range(MAX_REUSE):
         stem = ("rv-" if kind == "video" else "va-") + h(
             f"{kind}|{query}|{orient}|{slot}"
@@ -454,7 +550,7 @@ def assign(tag_val, orient, blocked=None):
     if kind == "image":
         fname, src = fetch_image(query, orient, slot)
     else:
-        fname, src = fetch_video(query, orient, slot)
+        fname, src = fetch_video(query, orient, slot, blocked)
     if fname:
         usage[fname] = usage.get(fname, 0) + 1
     return fname, src, kind
@@ -522,9 +618,10 @@ def main():
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "policy": {"pexels_timeout_s": API_T, "pexels_max_retries": RETRY,
                    "max_reuse_per_file": MAX_REUSE,
-                   "chain": ["cache/reuse", "pexels", "wikimedia", "openverse",
-                             "archive", "ai-free(pollinations)", "loremflickr",
-                             "bundled-fallback", "generated"]},
+                   "semantic_reuse": "last_resort",
+                   "motion_fallback_seconds": MOTION_SECONDS,
+                   "chain": ["exact-cache/reuse", "pexels", "wikimedia", "archive",
+                             "relevant-image->motion", "semantic-video-reuse"]},
         "episodes": episodes}, indent=2))
     OUT_JOBS.write_text(json.dumps(rewritten, indent=2))
 
@@ -544,7 +641,21 @@ def main():
     ]
     duplicate_assets = sum(1 for count in reuse_counts if 1 < count <= MAX_REUSE)
     reuse_violations = sum(1 for count in reuse_counts if count > MAX_REUSE)
-    log(f"images {ok_i}/{len(imgs)} | clips {ok_v}/{len(vids)} | unique files {uniq} | reused files {duplicate_assets} | reuse<= {MAX_REUSE}/file")
+    source_counts = {}
+    for scene in scenes:
+        src = scene.get("source") or "unknown"
+        source_counts[src] = source_counts.get(src, 0) + 1
+    log(
+        f"images {ok_i}/{len(imgs)} | clips {ok_v}/{len(vids)} | unique files {uniq} | "
+        f"reused files {duplicate_assets} | reuse<= {MAX_REUSE}/file"
+    )
+    log("sources: " + ", ".join(f"{k}={v}" for k, v in sorted(source_counts.items())))
+    unresolved = [s for s in scenes if (s["type"] == "broll" and not s.get("asset_video")) or
+                  (s["type"] == "portrait" and not s.get("asset"))]
+    if unresolved:
+        log(f"unresolved scenes: {len(unresolved)}")
+        for s in unresolved[:20]:
+            log(f"  {s.get('id')} [{s.get('type')}] {s.get('query')}")
     if reuse_violations:
         sys.exit(f"[assets] reuse policy violated: {reuse_violations} file(s) used more than {MAX_REUSE} times")
     log(f"manifest -> {MANIFEST.relative_to(ROOT)} | renderjobs -> {OUT_JOBS.relative_to(ROOT)}")
