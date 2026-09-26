@@ -134,6 +134,18 @@ export interface PersonaSpec {
     seed?: number;
 }
 
+/**
+ * Canonical render-ready visual segment. Every visual acquisition path can be
+ * normalize to this shape before rendering, regardless of provider/source.
+ * Media duration is measured/available; scene timing remains authoritative
+ * from the generated TTS timeline at render time.
+ */
+export interface VisualSegment {
+    asset_video: string;
+    duration: number;
+    scene_id: string;
+    source: string;
+}
 export interface AssetCandidate {
     kind: AssetKind;
     /** Scene index this asset belongs to (music uses -1). */
