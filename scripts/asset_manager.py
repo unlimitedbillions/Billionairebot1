@@ -281,7 +281,7 @@ The clip is intentionally longer than a typical scene so the renderer can trim
 it to the exact measured TTS duration. The subtle zoom/pan keeps still fallbacks
 from looking like frozen frames.
 """
-MOTION_SECONDS = 12
+MOTION_SECONDS = 8
 MOTION_FPS = 30
 
 
@@ -299,7 +299,10 @@ def image_to_motion(image_path, query, orient, slot):
     cmd = [
         "ffmpeg", "-y", "-loop", "1", "-i", str(image_path),
         "-vf", vf, "-t", str(MOTION_SECONDS),
-        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k", "-shortest",
         "-movflags", "+faststart", str(tmp),
     ]
     try:
