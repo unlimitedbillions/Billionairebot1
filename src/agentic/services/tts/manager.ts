@@ -10,6 +10,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { logInfo, logWarn } from '../../../shared/logging/runtime-logging.js';
+import { execFileSync } from 'node:child_process';
 import { isElevenLabsConfigured, synthesize as elevenlabsSynthesize, previewVoice as elevenlabsPreview } from './elevenlabs.js';
 import { isSiliconFlowConfigured, synthesize as siliconflowSynthesize, previewVoice as siliconflowPreview } from './siliconflow.js';
 
@@ -27,7 +28,23 @@ export interface TtsOptions {
 export interface TtsResult {
     outputPath: string;
     provider: TtsProvider;
-    duration?: number;
+    /** Exact media duration measured from the generated file with ffprobe. */
+    duration: number;
+}
+
+function measureAudioDuration(filePath: string): number {
+    try {
+        const out = execFileSync('ffprobe', [
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            filePath,
+        ], { encoding: 'utf8', timeout: 15000 }).trim();
+        const d = Number.parseFloat(out);
+        return Number.isFinite(d) && d > 0 ? d : 0;
+    } catch {
+        return 0;
+    }
 }
 
 /** Get configured TTS provider */
@@ -73,12 +90,12 @@ export async function synthesize(options: TtsOptions): Promise<TtsResult> {
         case 'elevenlabs': {
             const outputPath = options.outputPath || path.join(process.cwd(), 'workspace', 'tts-output', `elevenlabs-${Date.now()}.mp3`);
             const result = await elevenlabsSynthesize(options.text, { voice_id: options.voice });
-            return { outputPath: result, provider: 'elevenlabs' };
+            return { outputPath: result, provider: 'elevenlabs', duration: measureAudioDuration(result) };
         }
         case 'siliconflow': {
             const outputPath = options.outputPath || path.join(process.cwd(), 'workspace', 'tts-output', `siliconflow-${Date.now()}.mp3`);
             const result = await siliconflowSynthesize(options.text, { voice: options.voice });
-            return { outputPath: result, provider: 'siliconflow' };
+            return { outputPath: result, provider: 'siliconflow', duration: measureAudioDuration(result) };
         }
         case 'edge-tts':
         default: {
@@ -97,7 +114,7 @@ export async function synthesize(options: TtsOptions): Promise<TtsResult> {
                 '--rate', rate,
             ]);
             
-            return { outputPath, provider: 'edge-tts' };
+            return { outputPath, provider: 'edge-tts', duration: measureAudioDuration(outputPath) };
         }
     }
 }
