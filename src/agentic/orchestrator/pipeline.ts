@@ -201,30 +201,36 @@ export async function runAgenticPipeline(
             : req.voice;
 
     // Long-form runtime is achieved with spoken content, never with a silent
-    // tail, artificial pauses, or an artificially slowed voice. Word count is
-    // only a conservative pre-TTS guard; REAL TTS duration is authoritative.
+    // tail, artificial pauses, or an artificially slowed voice. For the production
+    // long-form format, narration should be 780–800 words; 790 is the generation
+    // midpoint. REAL TTS duration remains authoritative for the hard 120s gate.
     const isLongForm = req.platform === 'youtube' && (req.maxRuntimeSec ?? 0) >= 120;
     const longFormRequiredSec = isLongForm ? 120 : 0;
-    const countWords = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
+    const LONG_FORM_MIN_WORDS = 780;
+    const LONG_FORM_TARGET_WORDS = 790;
+    const LONG_FORM_MAX_WORDS = 800;
+    const countWords = (text: string) => text.trim().split(/\\s+/).filter(Boolean).length;
     if (isLongForm) {
-        // #57 proved that 2.2 words/sec badly under-estimated the actual voice
-        // speed (the ~400-word stories rendered at ~91-97s). Plan conservatively
-        // at 4.5 words/sec plus a safety buffer, but never treat this estimate as
-        // proof of duration. The measured TTS check below remains authoritative.
-        const targetWords = Math.ceil(longFormRequiredSec * 4.5 * 1.05);
-        const minimumAcceptedWords = Math.floor(targetWords * 0.95);
-        if (countWords(finalScript) < minimumAcceptedWords) {
+        if (countWords(finalScript) < LONG_FORM_MIN_WORDS) {
             try {
                 const expanded = await bridge.completeJSON<{ script: string }>(
-                    'Expand this long-form billionaire story naturally so the spoken narration reaches at least 120 seconds at normal US English speech speed. Preserve every original fact and event. Add only relevant context, transitions, consequences, and concrete details supported by the supplied story. Do not repeat the conclusion. Return one continuous narration script with no headings, no visual tags, and no hashtags.',
-                    JSON.stringify({ title: req.title, topic: req.topic, originalScript: finalScript, targetWords }),
+                    'Expand this long-form billionaire story into NATURAL SPOKEN NARRATION of EXACTLY 780 TO 800 WORDS (target 790). Preserve every original fact and event. Add only relevant context, transitions, consequences, and concrete details supported by the supplied story. Do not repeat the conclusion. Return one continuous narration script with no headings, no visual tags, and no hashtags. Stay within the 780–800 word range.',
+                    JSON.stringify({
+                        title: req.title,
+                        topic: req.topic,
+                        originalScript: finalScript,
+                        minimumWords: LONG_FORM_MIN_WORDS,
+                        targetWords: LONG_FORM_TARGET_WORDS,
+                        maximumWords: LONG_FORM_MAX_WORDS,
+                    }),
                     '{"script":"..."}',
                 );
-                if (expanded?.script && countWords(expanded.script) >= minimumAcceptedWords) {
+                const expandedWords = expanded?.script ? countWords(expanded.script) : 0;
+                if (expanded?.script && expandedWords >= LONG_FORM_MIN_WORDS && expandedWords <= LONG_FORM_MAX_WORDS) {
                     finalScript = expanded.script.trim();
-                    logInfo('📝 long-form narration pre-TTS expansion: ' + countWords(finalScript) + ' words (target ' + targetWords + ')');
+                    logInfo('📝 long-form narration pre-TTS expansion: ' + expandedWords + ' words (target ' + LONG_FORM_TARGET_WORDS + ', range ' + LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS + ')');
                 } else {
-                    logWarn('⚠ long-form pre-TTS expansion did not reach ' + minimumAcceptedWords + ' words; actual TTS duration will decide');
+                    logWarn('⚠ long-form pre-TTS expansion missed the ' + LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS + ' word range; actual TTS duration will decide');
                 }
             } catch (e: any) {
                 logWarn('⚠ long-form narration expansion skipped: ' + (e?.message ?? e) + '; actual TTS duration will decide');
