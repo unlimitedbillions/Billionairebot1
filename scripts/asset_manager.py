@@ -298,9 +298,9 @@ def image_to_motion(image_path, query, orient, slot):
     )
     cmd = [
         "ffmpeg", "-y", "-loop", "1", "-i", str(image_path),
-        "-vf", vf, "-t", str(MOTION_SECONDS),
         "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
         "-map", "0:v:0", "-map", "1:a:0",
+        "-vf", vf, "-t", str(MOTION_SECONDS),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
         "-c:a", "aac", "-b:a", "128k", "-shortest",
         "-movflags", "+faststart", str(tmp),
