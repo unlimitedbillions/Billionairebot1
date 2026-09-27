@@ -754,6 +754,17 @@ export async function runAgenticPipeline(
         passedBeforeVisualAcquisition: !isLongForm,
     };
     if (isLongForm) {
+        // A duration gate is meaningful only when every scene contains real speech.
+        // The speech controller has a last-resort silent WAV for ordinary renders;
+        // long-form must never count that silent fallback as successful narration.
+        const hasRealTts = () =>
+            Boolean(voiceovers?.voiceoverDriven) &&
+            (voiceovers?.scenes ?? []).length === plan.scenes.length &&
+            (voiceovers?.scenes ?? []).every((v) => fs.existsSync(v.audioPath) && !/_silent\\.(wav|mp3|m4a|ogg)$/i.test(v.audioPath));
+        if (!hasRealTts()) {
+            logWarn('⚠ long-form TTS stage returned incomplete/non-speech audio; retrying the full narration through Edge-TTS before duration measurement');
+            voiceovers = await generateAgenticVoiceovers(plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0]);
+        }
         const measureNarration = () => (voiceovers?.scenes ?? []).reduce((sum, v) => sum + (Number(v.durationSec) || 0), 0);
         let measuredSec = measureNarration();
         longFormDurationReport.ttsMeasuredSec = measuredSec;
@@ -842,6 +853,10 @@ export async function runAgenticPipeline(
                     sidecars: [],
                     fallbackUsed: retry.fallbackUsed,
                 };
+                if (!hasRealTts()) {
+                    logWarn('⚠ corrected long-form narration did not produce real speech for every scene; falling back to Edge-TTS');
+                    voiceovers = await generateAgenticVoiceovers(plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0]);
+                }
 
                 measuredSec = measureNarration();
                 longFormDurationReport.ttsMeasuredSec = measuredSec;
