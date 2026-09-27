@@ -839,6 +839,20 @@ export async function runAgenticPipeline(
                     targetRuntimeSec: req.maxRuntimeSec,
                 });
 
+                // Validate the words that will actually be spoken after parsing.
+                // Counting the raw LLM string alone can accidentally count visual
+                // tags/metadata that the parser removes from TTS.
+                const parsedSpokenWords = countWords(correctedPlan.scenes.map((s) => s.voiceoverText).join(' '));
+                if (parsedSpokenWords < longFormDurationReport.minimumAcceptedWords || parsedSpokenWords > longFormDurationReport.maximumAcceptedWords) {
+                    logWarn(
+                        '⚠ long-form correction rejected after scene parsing: ' +
+                        parsedSpokenWords + ' spoken words; required ' +
+                        longFormDurationReport.minimumAcceptedWords + '-' +
+                        longFormDurationReport.maximumAcceptedWords,
+                    );
+                    continue;
+                }
+
                 plan.scenes = correctedPlan.scenes;
                 plan.totalDurationSec = correctedPlan.totalDurationSec;
                 plan.musicQuery = correctedPlan.musicQuery;
