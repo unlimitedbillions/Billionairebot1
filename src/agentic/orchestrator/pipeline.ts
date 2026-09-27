@@ -759,7 +759,105 @@ export async function runAgenticPipeline(
         longFormDurationReport.ttsMeasuredSec = measuredSec;
         logInfo('LONGFORM_TTS_CHECK attempt=1 measured=' + measuredSec.toFixed(1) + 's required=' + longFormRequiredSec + 's');
 
-        // Keep correction at the script level, not a large scene-by-scene JSON contract.\n        // The previous contract was brittle: the model repeatedly returned an invalid\n        // 35-scene array, so a usable 780-800 word narration was discarded. A single\n        // continuous script is much easier for the model to satisfy and can then be\n        // deterministically re-parsed into scenes by our own parser.\n        const MAX_CORRECTION_ATTEMPTS = 3;\n        while (measuredSec < longFormRequiredSec && longFormDurationReport.correctionAttempts < MAX_CORRECTION_ATTEMPTS) {\n            longFormDurationReport.correctionAttempts += 1;\n\n            const currentWords = countWords(plan.scenes.map((s) => s.voiceoverText).join(' '));\n            const deficitSec = longFormRequiredSec - measuredSec;\n            const targetWords = Math.min(\n                longFormDurationReport.maximumAcceptedWords,\n                Math.max(longFormDurationReport.targetWords, LONG_FORM_TARGET_WORDS),\n            );\n            logInfo(\n                'LONGFORM_TTS_CORRECTION attempt=' + longFormDurationReport.correctionAttempts +\n                ' measured=' + measuredSec.toFixed(1) + 's deficit=' + deficitSec.toFixed(1) +\n                's currentWords=' + currentWords + ' targetWords=' + targetWords,\n            );\n\n            try {\n                const currentNarration = plan.scenes.map((s) => s.voiceoverText).join(' ').replace(/\\s+/g, ' ').trim();\n                const expanded = await bridge.completeJSON<{ script: string }>(\n                    'Expand this billionaire story into NATURAL SPOKEN NARRATION between 780 and 800 words (target 790). Preserve all existing facts, events, names, chronology, and tone. Add only relevant context, consequences, transitions, and concrete details supported by the existing narration. Do not repeat the conclusion. Do not add headings, visual tags, hashtags, meta commentary, or filler. Return ONE continuous narration script and nothing else. It is critical that the final script is between 780 and 800 words.',\n                    JSON.stringify({ title: req.title, topic: req.topic, requiredSec: longFormRequiredSec, measuredSec, targetWords, currentWords, narration: currentNarration }),\n                    '{"script":"one continuous 780-800 word narration"}',\n                );\n\n                const candidate = typeof expanded?.script === 'string' ? expanded.script.replace(/\\s+/g, ' ').trim() : '';\n                const candidateWords = candidate ? countWords(candidate) : 0;\n                if (!candidate || candidateWords < longFormDurationReport.minimumAcceptedWords || candidateWords > longFormDurationReport.maximumAcceptedWords) {\n                    logWarn(\n                        '⚠ long-form correction rejected on attempt ' +\n                        longFormDurationReport.correctionAttempts + ': ' + candidateWords +\n                        ' words; required ' + longFormDurationReport.minimumAcceptedWords + '-' +\n                        longFormDurationReport.maximumAcceptedWords,\n                    );\n                    continue;\n                }\n\n                // Rebuild the director plan from the corrected narration. This makes\n                // the final scene boundaries follow the final spoken script instead of\n                // forcing an LLM to manufacture a fragile scene-indexed JSON structure.\n                const correctedPlan = await buildPlan(\n                    candidate,\n                    {\n                        jobId,\n                        title: req.title,\n                        orientation: req.orientation ?? 'portrait',\n                        voice: resolvedVoice ?? 'en-US-JennyNeural',\n                        platform: req.platform,\n                        musicQuery: req.musicQuery,\n                        ...(req.personas ? { personas: req.personas } : {}),\n                        ...(req.defaultPersona ? { defaultPersona: req.defaultPersona } : {}),\n                        ...(req.scenePersonas ? { scenePersonas: req.scenePersonas } : {}),\n                        ...(req.dialogueVoices ? { dialogueVoices: req.dialogueVoices } : {}),\n                        ...(req.sceneDialogue ? { sceneDialogue: req.sceneDialogue } : {}),\n                    },\n                    parseScript,\n                );\n                await applyProEdits(correctedPlan, {\n                    hookFirst: req.hookFirst ?? true,\n                    variablePacing: req.variablePacing ?? true,\n                    brain,\n                    platform: req.platform,\n                    targetRuntimeSec: req.maxRuntimeSec,\n                });\n\n                plan.scenes = correctedPlan.scenes;\n                plan.totalDurationSec = correctedPlan.totalDurationSec;\n                plan.musicQuery = correctedPlan.musicQuery;\n\n                const { runVoiceStage } = await import('../media/voice-controller.js');\n                const retry = await runVoiceStage(plan, voiceWorkspace, req.voice, (percent, message) => {\n                    emit({ stage: 'voiceover', percent, message: 'duration-correction: ' + message });\n                }, req.useClonedVoiceId, req.personas);\n                voiceovers = {\n                    scenes: retry.voices.map((v) => ({ sceneIndex: v.sceneIndex, audioPath: v.audioPath, durationSec: v.durationSec, captionSegments: [] })),\n                    voiceoverDriven: retry.voiceoverDriven,\n                    sidecars: [],\n                    fallbackUsed: retry.fallbackUsed,\n                };\n\n                measuredSec = measureNarration();\n                longFormDurationReport.ttsMeasuredSec = measuredSec;\n                logInfo(\n                    'LONGFORM_TTS_CHECK attempt=' + (longFormDurationReport.correctionAttempts + 1) +\n                    ' measured=' + measuredSec.toFixed(1) + 's required=' + longFormRequiredSec + 's',\n                );\n            } catch (e: any) {\n                logWarn(\n                    '⚠ long-form TTS correction failed on attempt ' +\n                    longFormDurationReport.correctionAttempts + ': ' + (e?.message ?? e),\n                );\n            }\n        }\n\n        if (measuredSec < longFormRequiredSec) {
+        // Keep correction at the script level, not a large scene-by-scene JSON contract.
+        // The previous contract was brittle: the model repeatedly returned an invalid
+        // 35-scene array, so a usable 780-800 word narration was discarded. A single
+        // continuous script is much easier for the model to satisfy and can then be
+        // deterministically re-parsed into scenes by our own parser.
+        const MAX_CORRECTION_ATTEMPTS = 3;
+        while (measuredSec < longFormRequiredSec && longFormDurationReport.correctionAttempts < MAX_CORRECTION_ATTEMPTS) {
+            longFormDurationReport.correctionAttempts += 1;
+
+            const currentWords = countWords(plan.scenes.map((s) => s.voiceoverText).join(' '));
+            const deficitSec = longFormRequiredSec - measuredSec;
+            const targetWords = Math.min(
+                longFormDurationReport.maximumAcceptedWords,
+                Math.max(longFormDurationReport.targetWords, LONG_FORM_TARGET_WORDS),
+            );
+            logInfo(
+                'LONGFORM_TTS_CORRECTION attempt=' + longFormDurationReport.correctionAttempts +
+                ' measured=' + measuredSec.toFixed(1) + 's deficit=' + deficitSec.toFixed(1) +
+                's currentWords=' + currentWords + ' targetWords=' + targetWords,
+            );
+
+            try {
+                const currentNarration = plan.scenes.map((s) => s.voiceoverText).join(' ').replace(/\\s+/g, ' ').trim();
+                const expanded = await bridge.completeJSON<{ script: string }>(
+                    'Expand this billionaire story into NATURAL SPOKEN NARRATION between 780 and 800 words (target 790). Preserve all existing facts, events, names, chronology, and tone. Add only relevant context, consequences, transitions, and concrete details supported by the existing narration. Do not repeat the conclusion. Do not add headings, visual tags, hashtags, meta commentary, or filler. Return ONE continuous narration script and nothing else. It is critical that the final script is between 780 and 800 words.',
+                    JSON.stringify({ title: req.title, topic: req.topic, requiredSec: longFormRequiredSec, measuredSec, targetWords, currentWords, narration: currentNarration }),
+                    '{"script":"one continuous 780-800 word narration"}',
+                );
+
+                const candidate = typeof expanded?.script === 'string' ? expanded.script.replace(/\\s+/g, ' ').trim() : '';
+                const candidateWords = candidate ? countWords(candidate) : 0;
+                if (!candidate || candidateWords < longFormDurationReport.minimumAcceptedWords || candidateWords > longFormDurationReport.maximumAcceptedWords) {
+                    logWarn(
+                        '⚠ long-form correction rejected on attempt ' +
+                        longFormDurationReport.correctionAttempts + ': ' + candidateWords +
+                        ' words; required ' + longFormDurationReport.minimumAcceptedWords + '-' +
+                        longFormDurationReport.maximumAcceptedWords,
+                    );
+                    continue;
+                }
+
+                // Rebuild the director plan from the corrected narration. This makes
+                // the final scene boundaries follow the final spoken script instead of
+                // forcing an LLM to manufacture a fragile scene-indexed JSON structure.
+                const correctedPlan = await buildPlan(
+                    candidate,
+                    {
+                        jobId,
+                        title: req.title,
+                        orientation: req.orientation ?? 'portrait',
+                        voice: resolvedVoice ?? 'en-US-JennyNeural',
+                        platform: req.platform,
+                        musicQuery: req.musicQuery,
+                        ...(req.personas ? { personas: req.personas } : {}),
+                        ...(req.defaultPersona ? { defaultPersona: req.defaultPersona } : {}),
+                        ...(req.scenePersonas ? { scenePersonas: req.scenePersonas } : {}),
+                        ...(req.dialogueVoices ? { dialogueVoices: req.dialogueVoices } : {}),
+                        ...(req.sceneDialogue ? { sceneDialogue: req.sceneDialogue } : {}),
+                    },
+                    parseScript,
+                );
+                await applyProEdits(correctedPlan, {
+                    hookFirst: req.hookFirst ?? true,
+                    variablePacing: req.variablePacing ?? true,
+                    brain,
+                    platform: req.platform,
+                    targetRuntimeSec: req.maxRuntimeSec,
+                });
+
+                plan.scenes = correctedPlan.scenes;
+                plan.totalDurationSec = correctedPlan.totalDurationSec;
+                plan.musicQuery = correctedPlan.musicQuery;
+
+                const { runVoiceStage } = await import('../media/voice-controller.js');
+                const retry = await runVoiceStage(plan, voiceWorkspace, req.voice, (percent, message) => {
+                    emit({ stage: 'voiceover', percent, message: 'duration-correction: ' + message });
+                }, req.useClonedVoiceId, req.personas);
+                voiceovers = {
+                    scenes: retry.voices.map((v) => ({ sceneIndex: v.sceneIndex, audioPath: v.audioPath, durationSec: v.durationSec, captionSegments: [] })),
+                    voiceoverDriven: retry.voiceoverDriven,
+                    sidecars: [],
+                    fallbackUsed: retry.fallbackUsed,
+                };
+
+                measuredSec = measureNarration();
+                longFormDurationReport.ttsMeasuredSec = measuredSec;
+                logInfo(
+                    'LONGFORM_TTS_CHECK attempt=' + (longFormDurationReport.correctionAttempts + 1) +
+                    ' measured=' + measuredSec.toFixed(1) + 's required=' + longFormRequiredSec + 's',
+                );
+            } catch (e: any) {
+                logWarn(
+                    '⚠ long-form TTS correction failed on attempt ' +
+                    longFormDurationReport.correctionAttempts + ': ' + (e?.message ?? e),
+                );
+            }
+        }
+
+        if (measuredSec < longFormRequiredSec) {
             longFormDurationReport.passedBeforeVisualAcquisition = false;
             writeJson(voiceWorkspace, 'long-form-duration.json', longFormDurationReport);
             throw new Error('LONGFORM_TTS_DURATION_FAIL: measured ' + measuredSec.toFixed(1) + 's, required ' + longFormRequiredSec + 's after ' + longFormDurationReport.correctionAttempts + ' correction attempt(s); visual acquisition blocked');
