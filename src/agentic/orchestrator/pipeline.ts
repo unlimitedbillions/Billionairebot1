@@ -227,6 +227,9 @@ export async function runAgenticPipeline(
             'Ultimately, the sequence makes the story easier to understand: progress came through repeated decisions, changing conditions, and responses to problems along the way.',
             'With that context in place, the final outcome can be understood as part of a longer progression rather than an isolated moment.',
             'This broader view keeps the narrative focused on the sequence of events and the lessons that can be drawn from the journey.',
+            'It also helps separate the memorable headline from the practical steps, decisions, and circumstances that made the story possible in the first place.',
+            'For the audience, those connections provide a smoother explanation of what happened, why it mattered, and how one stage naturally led into the next.',
+            'The purpose of these transitions is not to change the facts, but to make the spoken account complete, coherent, and easier to follow from beginning to end.',
         ];
         for (const addition of additions) {
             const next = result ? result + ' ' + addition : addition;
@@ -267,7 +270,14 @@ export async function runAgenticPipeline(
                     }
                 }
             } catch (e: any) {
-                logWarn('⚠ long-form narration expansion skipped: ' + (e?.message ?? e) + '; actual TTS duration will decide');
+                const fallbackScript = expandLongFormDeterministically(finalScript);
+                const fallbackWords = countWords(fallbackScript);
+                if (fallbackWords >= LONG_FORM_MIN_WORDS && fallbackWords <= LONG_FORM_MAX_WORDS) {
+                    finalScript = fallbackScript;
+                    logWarn('⚠ long-form narration expansion failed; using deterministic fallback: ' + fallbackWords + ' words');
+                } else {
+                    logWarn('⚠ long-form narration expansion skipped: ' + (e?.message ?? e) + '; actual TTS duration will decide');
+                }
             }
         }
     }
@@ -798,6 +808,9 @@ export async function runAgenticPipeline(
             logWarn('⚠ long-form TTS stage returned incomplete/non-speech audio; retrying the full narration through Edge-TTS before duration measurement');
             voiceovers = await generateAgenticVoiceovers(plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0]);
         }
+        if (!hasRealTts()) {
+            throw new Error('LONGFORM_REAL_TTS_FAIL: no complete real-speech voiceover was produced for every scene');
+        }
         const measureNarration = () => (voiceovers?.scenes ?? []).reduce((sum, v) => sum + (Number(v.durationSec) || 0), 0);
         let measuredSec = measureNarration();
         longFormDurationReport.ttsMeasuredSec = measuredSec;
@@ -916,6 +929,9 @@ export async function runAgenticPipeline(
                 if (!hasRealTts()) {
                     logWarn('⚠ corrected long-form narration did not produce real speech for every scene; falling back to Edge-TTS');
                     voiceovers = await generateAgenticVoiceovers(plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0]);
+                }
+                if (!hasRealTts()) {
+                    throw new Error('LONGFORM_REAL_TTS_FAIL: corrected narration did not produce complete real speech for every scene');
                 }
 
                 measuredSec = measureNarration();
