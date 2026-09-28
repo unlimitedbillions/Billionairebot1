@@ -210,6 +210,8 @@ export async function runAgenticPipeline(
     const LONG_FORM_TARGET_WORDS = 790;
     const LONG_FORM_MAX_WORDS = 800;
     const countWords = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
+    const countSpokenWords = (text: string) =>
+        countWords(text.replace(/\[[^\]]*\]/g, ' '));
 
     // Production-safe fallback for environments where no LLM model key/driver is
     // available. The long-form gate must not depend on an optional model merely to
@@ -240,7 +242,7 @@ export async function runAgenticPipeline(
         return result;
     };
     if (isLongForm) {
-        const initialWordCount = countWords(finalScript);
+        const initialWordCount = countSpokenWords(finalScript);
         if (initialWordCount < LONG_FORM_MIN_WORDS || initialWordCount > LONG_FORM_MAX_WORDS) {
             try {
                 const expanded = await bridge.completeJSON<{ script: string }>(
@@ -255,18 +257,21 @@ export async function runAgenticPipeline(
                     }),
                     '{"script":"..."}',
                 );
-                const expandedWords = expanded?.script ? countWords(expanded.script) : 0;
+                const expandedWords = expanded?.script ? countSpokenWords(expanded.script) : 0;
                 if (expanded?.script && expandedWords >= LONG_FORM_MIN_WORDS && expandedWords <= LONG_FORM_MAX_WORDS) {
                     finalScript = expanded.script.trim();
                     logInfo('📝 long-form narration pre-TTS expansion: ' + expandedWords + ' words (target ' + LONG_FORM_TARGET_WORDS + ', range ' + LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS + ')');
                 } else {
                     const fallbackScript = expandLongFormDeterministically(finalScript);
-                    const fallbackWords = countWords(fallbackScript);
+                    const fallbackWords = countSpokenWords(fallbackScript);
                     if (fallbackWords >= LONG_FORM_MIN_WORDS && fallbackWords <= LONG_FORM_MAX_WORDS) {
                         finalScript = fallbackScript;
                         logWarn('⚠ LLM long-form expansion unavailable/invalid; using deterministic narration expansion: ' + fallbackWords + ' words');
                     } else {
-                        logWarn('⚠ long-form pre-TTS expansion missed the ' + LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS + ' word range; actual TTS duration will decide');
+                        throw new Error(
+                            'LONGFORM_WORDCOUNT_FAIL: deterministic expansion could not produce a spoken narration within ' +
+                            LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS + ' words',
+                        );
                     }
                 }
             } catch (e: any) {
@@ -276,7 +281,10 @@ export async function runAgenticPipeline(
                     finalScript = fallbackScript;
                     logWarn('⚠ long-form narration expansion failed; using deterministic fallback: ' + fallbackWords + ' words');
                 } else {
-                    logWarn('⚠ long-form narration expansion skipped: ' + (e?.message ?? e) + '; actual TTS duration will decide');
+                    throw new Error(
+                        'LONGFORM_WORDCOUNT_FAIL: long-form narration expansion failed and deterministic fallback could not produce ' +
+                        LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS + ' spoken words: ' + (e?.message ?? e),
+                    );
                 }
             }
         }
@@ -317,6 +325,21 @@ export async function runAgenticPipeline(
         platform: req.platform,
         targetRuntimeSec: req.maxRuntimeSec,
     });
+
+    if (isLongForm) {
+        const plannedSpokenWords = countSpokenWords(plan.scenes.map((s) => s.voiceoverText).join(' '));
+        if (plannedSpokenWords < LONG_FORM_MIN_WORDS || plannedSpokenWords > LONG_FORM_MAX_WORDS) {
+            throw new Error(
+                'LONGFORM_WORDCOUNT_FAIL: final parsed narration is ' + plannedSpokenWords +
+                ' spoken words; required ' + LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS +
+                ' before TTS',
+            );
+        }
+        logInfo(
+            'LONGFORM_WORDCOUNT_CHECK spoken=' + plannedSpokenWords +
+            ' required=' + LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS,
+        );
+    }
 
     // Runtime alignment is applied after real TTS below. Do not alter speech rate here.\n    // Runtime alignment is applied after real TTS below; no pre-TTS rate forcing.\n\n    // Localize burned captions to match a non-English voiceover. When the
     // target language isn't English, translate each scene's voiceoverText and
@@ -825,7 +848,7 @@ export async function runAgenticPipeline(
         while (measuredSec < longFormRequiredSec && longFormDurationReport.correctionAttempts < MAX_CORRECTION_ATTEMPTS) {
             longFormDurationReport.correctionAttempts += 1;
 
-            const currentWords = countWords(plan.scenes.map((s) => s.voiceoverText).join(' '));
+            const currentWords = countSpokenWords(plan.scenes.map((s) => s.voiceoverText).join(' '));
             const deficitSec = longFormRequiredSec - measuredSec;
             const targetWords = Math.min(
                 longFormDurationReport.maximumAcceptedWords,
@@ -846,12 +869,12 @@ export async function runAgenticPipeline(
                 );
 
                 const candidate = typeof expanded?.script === 'string' ? expanded.script.replace(/\s+/g, ' ').trim() : '';
-                const candidateWords = candidate ? countWords(candidate) : 0;
+                const candidateWords = candidate ? countSpokenWords(candidate) : 0;
                 let usableCandidate = candidate;
                 let usableCandidateWords = candidateWords;
                 if (!usableCandidate || usableCandidateWords < longFormDurationReport.minimumAcceptedWords || usableCandidateWords > longFormDurationReport.maximumAcceptedWords) {
                     usableCandidate = expandLongFormDeterministically(currentNarration);
-                    usableCandidateWords = countWords(usableCandidate);
+                    usableCandidateWords = countSpokenWords(usableCandidate);
                     if (usableCandidateWords >= longFormDurationReport.minimumAcceptedWords && usableCandidateWords <= longFormDurationReport.maximumAcceptedWords) {
                         logWarn(
                             '⚠ LLM long-form correction unavailable/invalid on attempt ' +
@@ -865,7 +888,10 @@ export async function runAgenticPipeline(
                             '; required ' + longFormDurationReport.minimumAcceptedWords + '-' +
                             longFormDurationReport.maximumAcceptedWords,
                         );
-                        continue;
+                        throw new Error(
+                            'LONGFORM_WORDCOUNT_FAIL: correction fallback could not produce ' +
+                            longFormDurationReport.minimumAcceptedWords + '-' + longFormDurationReport.maximumAcceptedWords + ' spoken words',
+                        );
                     }
                 }
                 const candidateForPlan = usableCandidate;
@@ -901,7 +927,7 @@ export async function runAgenticPipeline(
                 // Validate the words that will actually be spoken after parsing.
                 // Counting the raw LLM string alone can accidentally count visual
                 // tags/metadata that the parser removes from TTS.
-                const parsedSpokenWords = countWords(correctedPlan.scenes.map((s) => s.voiceoverText).join(' '));
+                const parsedSpokenWords = countSpokenWords(correctedPlan.scenes.map((s) => s.voiceoverText).join(' '));
                 if (parsedSpokenWords < longFormDurationReport.minimumAcceptedWords || parsedSpokenWords > longFormDurationReport.maximumAcceptedWords) {
                     logWarn(
                         '⚠ long-form correction rejected after scene parsing: ' +
