@@ -234,8 +234,11 @@ export async function runAgenticPipeline(
             'The purpose of these transitions is not to change the facts, but to make the spoken account complete, coherent, and easier to follow from beginning to end.',
         ];
         for (const addition of additions) {
-            const next = result ? result + ' ' + addition : addition;
-            const words = countWords(next);
+            const ctaMatch = result.match(/\s*(Subscribe for the next untold billionaire story[\s\S]*)$/i);
+            const next = ctaMatch
+                ? result.slice(0, ctaMatch.index).trimEnd() + ' ' + addition + ' ' + ctaMatch[1].trimStart()
+                : (result ? result + ' ' + addition : addition);
+            const words = countSpokenWords(next);
             if (words <= LONG_FORM_MAX_WORDS) result = next;
             if (words >= LONG_FORM_MIN_WORDS) break;
         }
