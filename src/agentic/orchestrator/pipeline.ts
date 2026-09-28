@@ -236,7 +236,7 @@ export async function runAgenticPipeline(
         for (const addition of additions) {
             const ctaMatch = result.match(/\s*(Subscribe for the next untold billionaire story[\s\S]*)$/i);
             const next = ctaMatch
-                ? result.slice(0, ctaMatch.index).trimEnd() + ' ' + addition + ' ' + ctaMatch[1].trimStart()
+                ? result.slice(0, ctaMatch.index ?? result.length).trimEnd() + ' ' + addition + ' ' + ctaMatch[1].trimStart()
                 : (result ? result + ' ' + addition : addition);
             const words = countSpokenWords(next);
             if (words <= LONG_FORM_MAX_WORDS) result = next;
