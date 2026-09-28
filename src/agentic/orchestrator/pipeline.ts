@@ -216,7 +216,7 @@ export async function runAgenticPipeline(
     // reach the required narration length. These additions contain no new factual
     // claims; they provide transitions/context that can be spoken naturally.
     const expandLongFormDeterministically = (narration: string): string => {
-        let result = narration.replace(/\\s+/g, ' ').trim();
+        let result = narration.replace(/\s+/g, ' ').trim();
         const additions = [
             'Taken together, these moments show how the story developed through a series of choices, setbacks, adjustments, and opportunities rather than one sudden turning point.',
             'This part of the journey also matters because it connects the earlier struggle with the decisions that shaped what came next.',
@@ -825,14 +825,14 @@ export async function runAgenticPipeline(
             );
 
             try {
-                const currentNarration = plan.scenes.map((s) => s.voiceoverText).join(' ').replace(/\\s+/g, ' ').trim();
+                const currentNarration = plan.scenes.map((s) => s.voiceoverText).join(' ').replace(/\s+/g, ' ').trim();
                 const expanded = await bridge.completeJSON<{ script: string }>(
                     'Expand this billionaire story into NATURAL SPOKEN NARRATION between 780 and 800 words (target 790). Preserve all existing facts, events, names, chronology, and tone. Add only relevant context, consequences, transitions, and concrete details supported by the existing narration. Do not repeat the conclusion. Do not add headings, visual tags, hashtags, meta commentary, or filler. Return ONE continuous narration script and nothing else. It is critical that the final script is between 780 and 800 words.',
                     JSON.stringify({ title: req.title, topic: req.topic, requiredSec: longFormRequiredSec, measuredSec, targetWords, currentWords, narration: currentNarration }),
                     '{"script":"one continuous 780-800 word narration"}',
                 );
 
-                const candidate = typeof expanded?.script === 'string' ? expanded.script.replace(/\\s+/g, ' ').trim() : '';
+                const candidate = typeof expanded?.script === 'string' ? expanded.script.replace(/\s+/g, ' ').trim() : '';
                 const candidateWords = candidate ? countWords(candidate) : 0;
                 let usableCandidate = candidate;
                 let usableCandidateWords = candidateWords;
