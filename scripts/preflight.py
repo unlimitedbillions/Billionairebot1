@@ -8,6 +8,7 @@ rewrite only visual-tag payloads; it must never change spoken narration.
 Actual TTS duration remains the final duration authority.
 """
 import json
+import os
 import re
 import shutil
 import subprocess
