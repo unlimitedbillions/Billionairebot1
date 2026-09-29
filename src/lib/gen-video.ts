@@ -66,6 +66,7 @@ function resolveVideoGenProvider(): VideoGenProvider | null {
 
 /** True only when a video-generation key is configured. Offline-safe default: false. */
 export function isVideoGenEnabled(): boolean {
+    if (process.env.CI_ZERO_NETWORK === '1') return false;
     return resolveVideoGenProvider() !== null;
 }
 
@@ -122,6 +123,7 @@ async function resolveAsyncUrl(maybeTask: any, provider: VideoGenProvider, timeo
  * unavailable (no key / offline / failure). Never throws.
  */
 export async function generateSceneVideo(opts: GenVideoOptions): Promise<string> {
+    if (process.env.CI_ZERO_NETWORK === '1') return '';
     const p = resolveVideoGenProvider();
     if (!p) return '';
     fs.mkdirSync(opts.outDir, { recursive: true });
