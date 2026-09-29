@@ -260,16 +260,21 @@ let _poolCache: string[] | null = null;
  * Deterministic: the pool is scanned once and sorted, so repeated runs and
  * multi-scene jobs bind the same files to the same scenes.
  */
-function localPoolEntry(sceneIndex: number): string | null {
+function localPoolEntry(sceneIndex: number, desiredKind: 'image' | 'video'): string | null {
     if (_poolCache === null) scanPool();
-    if (_poolCache!.length === 0) return null;
-    const chosen = _poolCache![sceneIndex % _poolCache!.length];
+    const pool = _poolCache!.filter((file) => {
+        const ext = path.extname(file).toLowerCase();
+        const isVideo = ['.mp4', '.mov', '.webm', '.m4v'].includes(ext);
+        return desiredKind === 'video' ? isVideo : !isVideo;
+    });
+    if (pool.length === 0) return null;
+    const chosen = pool[sceneIndex % pool.length];
     // A stale cache entry (files deleted since scan) must not break a scene:
     // re-scan once, then fall through to stock if still empty.
     if (!fs.existsSync(chosen)) {
         scanPool();
         if (_poolCache!.length === 0) return null;
-        return _poolCache![sceneIndex % _poolCache!.length];
+        return pool[sceneIndex % pool.length];
     }
     return chosen;
 }
@@ -366,8 +371,9 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
         // found under input/visuals/ so users can drive videos from their own
         // footage without stock fetching. Skipped when a file is missing so
         // the stock ladder below still runs (never blocks a scene).
-        if (deps.localPool && !scene.localAsset) {
-            const poolEntry = localPoolEntry(i);
+        const zeroNetwork = process.env.CI_ZERO_NETWORK === '1';
+        if ((deps.localPool || zeroNetwork) && !scene.localAsset) {
+            const poolEntry = localPoolEntry(i, effectiveKind);
             if (poolEntry) {
                 const ext = path.extname(poolEntry).toLowerCase();
                 const isVideo = ['.mp4', '.mov', '.webm', '.m4v'].includes(ext);
@@ -415,6 +421,19 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
                 continue; // done with this scene
             }
             // File missing → fall through to stock fetch below.
+        }
+
+        // Production render rule: once PREFLIGHT has completed, rendering must
+        // never discover or download remote visual assets. Consume only local
+        // prepared material; image scenes may use an offline generated fallback.
+        if (zeroNetwork) {
+            const fb = effectiveKind === 'image' ? generateFallbackVisual(scene, effectiveKind, dir, 0) : null;
+            if (fb) {
+                candidates.push({ kind: effectiveKind, sceneIndex: i, candidateIndex: 1, localPath: fb.localPath, url: fb.url, source: fb.source, license: fb.license, licenseUrl: fb.licenseUrl, keywords: scene.searchKeywords });
+            } else {
+                console.warn(`zero-network asset miss: scene ${i} has no prepared local ${effectiveKind}`);
+            }
+            continue;
         }
 
         // Fetch all scenes with a bounded concurrency so a 20-scene plan does
