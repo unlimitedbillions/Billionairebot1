@@ -1039,6 +1039,30 @@ export async function runAgenticPipeline(
             logWarn(`⚠ acquire timed out after ${acquireTimeboxMs}ms — proceeding with ${0} candidates`);
             return { workspace: { jobId, root: '', assetsDir: '', imagesDir: '', videosDir: '', musicDir: '', verificationDir: '' } as any, candidates: [] as any[] };
         });
+    const zeroNetworkRender = process.env.CI_ZERO_NETWORK === '1';
+    if (zeroNetworkRender) {
+        const missingScenes = plan.scenes.filter((scene, index) => {
+            const expectedKind: 'image' | 'video' =
+                scene.visualPreference === 'video' || scene.visualPreference === 'video-gen' || scene.visualPreference === 'video-gen-local'
+                    ? 'video'
+                    : 'image';
+            return !candidates.some(
+                (candidate) =>
+                    candidate.sceneIndex === index &&
+                    candidate.kind === expectedKind &&
+                    fs.existsSync(candidate.localPath),
+            );
+        });
+        if (missingScenes.length > 0) {
+            throw new Error(
+                'ZERO_NETWORK_ASSET_MISS: ' +
+                missingScenes.length +
+                ' scene(s) have no prepared local visual after PREFLIGHT: ' +
+                missingScenes.map((s) => s.sceneNumber).join(', '),
+            );
+        }
+        logInfo('ZERO_NETWORK_RENDER_CHECK local visual coverage=' + plan.scenes.length + '/' + plan.scenes.length);
+    }
     emit({ stage: 'acquire', percent: 100, message: `Acquired ${candidates.length} candidates` });
     writeJson(workspace, 'plan.json', plan);
     // ADVANCED (timeline IR): persist timeline.json + director.json best-effort.
@@ -1118,7 +1142,7 @@ export async function runAgenticPipeline(
 
     // ── OFFLINE FALLBACK: if gate failed due to missing visuals, retry with bundled assets ──
     let offlineFallback = false;
-    if (!gate.pass) {
+    if (!gate.pass && !zeroNetworkRender) {
         const hasVisuals = candidates.some((c) => c.kind !== 'music' && c.url);
         const requiresRealVideo = plan.scenes.some((s) => s.visualPreference === 'video');
         if (!requiresRealVideo && !hasVisuals) {
