@@ -734,6 +734,26 @@ export async function runAgenticPipeline(
                     console.warn(`  ⚠ backgroundMusic file not found: ${req.backgroundMusic} (in input/visuals/) — falling back to stock music`);
                 }
             }
+            const zeroNetwork = process.env.CI_ZERO_NETWORK === '1';
+            if (zeroNetwork) {
+                const fallback = [inputBgmPath('twenty_minutes.mp3'), inputBgmPath('two_minutes.mp3')].find((p) =>
+                    fs.existsSync(p),
+                );
+                if (!fallback) {
+                    logWarn('  ⚠ zero-network music: no bundled local track found; continuing voice-only');
+                    return [];
+                }
+                const normalized = normalizeAudio(fallback);
+                const finalPath = normalized && fs.existsSync(normalized) ? normalized : fallback;
+                logInfo('  🎵 Zero-network render: using bundled local background music');
+                return [{
+                    url: '',
+                    localPath: finalPath,
+                    source: 'local-bundled',
+                    license: 'Bundled project asset',
+                    licenseUrl: '',
+                }];
+            }
             const tracks = [];
             for (let i = 0; i < count; i++) {
                 const m = await resolveFreeBackgroundMusic({ query, enabled: true });
