@@ -64,6 +64,7 @@ function resolveGenProvider(): GenProvider | null {
 
 /** True when a generation key is configured OR ComfyUI is reachable. */
 export function isGenEnabled(): boolean {
+    if (process.env.CI_ZERO_NETWORK === '1') return false;
     if (resolveGenProvider() !== null) return true;
     // ComfyUI is checked at generate time
     return true;
@@ -92,6 +93,7 @@ async function tryLocalGenImage(opts: GenImageOptions): Promise<string> {
  * (no key / offline / failure). Never throws.
  */
 export async function generateSceneImage(opts: GenImageOptions): Promise<string> {
+    if (process.env.CI_ZERO_NETWORK === '1') return '';
     // Try local ComfyUI first (free, offline)
     const local = await tryLocalGenImage(opts);
     if (local) return local;
