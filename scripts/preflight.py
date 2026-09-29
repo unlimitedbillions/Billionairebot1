@@ -181,12 +181,15 @@ def show(rows, failed):
 def main():
     rows = gather()
     failed = [n for n, ok, _ in rows if not ok]
+    zero_network = os.getenv("CI_ZERO_NETWORK") == "1"
 
-    if failed and any(("Image" in f or "clip" in f) for f in failed):
+    if failed and any(("Image" in f or "clip" in f) for f in failed) and not zero_network:
         print("[preflight] repairing missing assets...")
         subprocess.run([sys.executable, str(ROOT / "scripts" / "asset_manager.py")], cwd=ROOT)
         rows = gather()
         failed = [n for n, ok, _ in rows if not ok]
+    elif failed and zero_network and any(("Image" in f or "clip" in f) for f in failed):
+        print("[preflight] zero-network render: missing assets are a hard failure; no downloads allowed.")
 
     show(rows, failed)
     sys.exit(1 if failed else 0)
