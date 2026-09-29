@@ -273,8 +273,13 @@ function localPoolEntry(sceneIndex: number, desiredKind: 'image' | 'video'): str
     // re-scan once, then fall through to stock if still empty.
     if (!fs.existsSync(chosen)) {
         scanPool();
-        if (_poolCache!.length === 0) return null;
-        return pool[sceneIndex % pool.length];
+        const refreshed = _poolCache!.filter((file) => {
+            const ext = path.extname(file).toLowerCase();
+            const isVideo = ['.mp4', '.mov', '.webm', '.m4v'].includes(ext);
+            return desiredKind === 'video' ? isVideo : !isVideo;
+        });
+        if (refreshed.length === 0) return null;
+        return refreshed[sceneIndex % refreshed.length];
     }
     return chosen;
 }
