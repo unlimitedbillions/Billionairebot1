@@ -8,13 +8,12 @@ Rules:
     providers cannot supply suitable footage.
   * Zero network at render: everything downloaded/generated beforehand.
   * Reuse cap: one file serves at most 2 scenes (MAX_REUSE).
-  * Chain (all free):
-        cache/reuse -> Pexels (7s timeout, 1 retry; skipped if no key)
-                    -> Wikimedia -> Openverse -> Internet Archive (clips)
-                    -> POLLINATIONS AI IMAGE (free, no key, no signup;
-                       scene imagery only, NEVER people/faces)
-                    -> LoremFlickr keyword photos (free, no key)
-                    -> bundled image fallback / ffmpeg gradient image
+  * Chain:
+        exact local cache/reuse -> Pexels (first network video provider)
+        -> Wikimedia -> Internet Archive (video fallbacks)
+        -> relevant image -> motion conversion -> semantic reuse (last resort)
+        Image scenes use Pexels -> Wikimedia -> Openverse -> local fallback.
+        Pollinations/LoremFlickr are not production-critical providers.
   * Semantic asset reuse is a LAST-RESORT fallback only, after real video and
     relevant image->motion fallbacks fail; unrelated assets are never reused.
   * Face safety: queries that look like a real person NEVER go to AI or random
@@ -717,6 +716,8 @@ def process_jobs(jobs):
 
 
 def main():
+    log("provider policy: video network order = " + " -> ".join(VIDEO_PROVIDER_ORDER))
+    log("pexels video provider: " + ("READY (API key present)" if PEXELS_KEY else "SKIPPED (PEXELS_API_KEY missing)"))
     if not SRC.exists():
         sys.exit("[assets] selected production jobs missing: input/scripts/render-jobs.json")
     jobs = json.loads(SRC.read_text())
