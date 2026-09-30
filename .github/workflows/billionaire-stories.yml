@@ -4,6 +4,13 @@ on:
   schedule:
     - cron: "0 8,16 * * 1,3,6"
   workflow_dispatch:
+    inputs:
+      person:
+        description: "Person to produce (scheduled runs choose automatically)"
+        required: false
+        type: choice
+        options: [auto, musk, bezos]
+        default: auto
 
 permissions:
   contents: write
@@ -54,10 +61,41 @@ jobs:
           key: assets-${{ hashFiles('input/scripts/billionaire-stories.json') }}
           restore-keys: assets-
 
+      - name: Select production person
+        id: person
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.person }}" != "" ] && [ "${{ inputs.person }}" != "auto" ]; then
+            PERSON="${{ inputs.person }}"
+          elif [ "${{ github.event.schedule }}" = "0 16 * * 1,3,6" ]; then
+            PERSON="bezos"
+          else
+            PERSON="musk"
+          fi
+          echo "person=$PERSON" >> "$GITHUB_OUTPUT"
+          echo "Production person: $PERSON"
+
+      - name: Select only this person's short + long jobs
+        shell: bash
+        env:
+          PERSON: ${{ steps.person.outputs.person }}
+        run: |
+          python - <<'PY'
+          import json, os
+          person = os.environ["PERSON"]
+          jobs = json.load(open("input/scripts/billionaire-stories.json", encoding="utf-8"))
+          selected = [j for j in jobs if person in (" ".join([str(j.get("id","")), str(j.get("title","")), str(j.get("topic",""))]).lower())]
+          if len(selected) != 2 or {j.get("platform") for j in selected} != {"shorts", "youtube"}:
+              raise SystemExit(f"Expected exactly one short + one long job for {person}, found {len(selected)}")
+          json.dump(selected, open("input/scripts/render-jobs.json", "w", encoding="utf-8"), indent=2)
+          print("Selected jobs:", [j["id"] for j in selected])
+          PY
+
       - name: PLAN + PREPARE (Prefetch + AI Fallback)
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          PRODUCTION_PERSON: ${{ steps.person.outputs.person }}
         run: python scripts/asset_manager.py
 
       - name: Ensure Remotion browser
