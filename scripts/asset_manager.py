@@ -45,8 +45,8 @@ MANIFEST = CACHE / "assets.json"
 FALLBACK = ROOT / "assets" / "fallback"
 
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "").strip()
-API_T = 7            # spec: ~6-8s
-RETRY = 1            # max 1 retry per source
+API_T = 10           # provider API timeout
+RETRY = 2             # bounded provider retries
 MAX_REUSE = 2        # one file serves at most 2 scenes
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi", ".mpeg", ".mpg", ".m2ts", ".mts", ".ts", ".ogv", ".3gp", ".flv", ".wmv", ".asf"}
 DL_T = 20            # keep asset prep bounded; local/generated fallbacks handle misses
@@ -160,38 +160,57 @@ def pexels_images(query, orient):
 
 
 # ---------------- KEY-LESS PROVIDERS -----------------------------------------
-def wikimedia_images(query):
+def _wikimedia_search(query, media_kind, limit=10):
+    """Search Commons via the Action API and return concrete media URLs."""
     query = provider_query(query)
-    d = get("https://commons.wikimedia.org/w/api.php", {
-        "action": "query", "format": "json", "generator": "search",
-        "gsrsearch": f"filetype:bitmap {query}", "gsrnamespace": "6",
-        "gsrlimit": "3", "prop": "imageinfo", "iiprop": "url|mime"})
-    pages = (d.get("query") or {}).get("pages") or {}
+    variants = [query]
+    compact = " ".join(w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) >= 4)
+    if compact and compact != query.lower():
+        variants.append(compact)
+
+    seen = set()
     out = []
-    for p in sorted(pages.values(), key=lambda x: x.get("index", 99)):
-        ii = (p.get("imageinfo") or [{}])[0]
-        if ii.get("mime") in ("image/jpeg", "image/png") and ii.get("url"):
-            out.append(ii["url"])
+    for search in variants:
+        try:
+            d = get("https://commons.wikimedia.org/w/api.php", {
+                "action": "query", "format": "json", "generator": "search",
+                "gsrsearch": search, "gsrnamespace": "6", "gsrlimit": str(limit),
+                "prop": "imageinfo", "iiprop": "url|mime|size", "iiurlwidth": "1920",
+            })
+            pages = (d.get("query") or {}).get("pages") or {}
+            for p in sorted(pages.values(), key=lambda x: x.get("index", 999)):
+                ii = (p.get("imageinfo") or [{}])[0]
+                mime = str(ii.get("mime") or "").lower()
+                size = int(ii.get("size") or 0)
+                title = str(p.get("title") or "")
+                if media_kind == "image":
+                    if mime not in ("image/jpeg", "image/png", "image/webp"):
+                        continue
+                    url = ii.get("thumburl") or ii.get("url")
+                    if not url or url in seen:
+                        continue
+                    seen.add(url)
+                    out.append({"url": url, "text": title, "size": size, "mime": mime})
+                else:
+                    if not mime.startswith("video/") or not ii.get("url"):
+                        continue
+                    if size and size > 120_000_000:
+                        continue
+                    if ii["url"] in seen:
+                        continue
+                    seen.add(ii["url"])
+                    out.append({"url": ii["url"], "text": title, "size": size, "mime": mime})
+        except Exception as e:
+            log(f"  wikimedia {media_kind} search failed for {search!r}: {e}")
     return out
+
+
+def wikimedia_images(query):
+    return _wikimedia_search(query, "image", limit=10)
 
 
 def wikimedia_videos(query):
-    query = provider_query(query)
-    d = get("https://commons.wikimedia.org/w/api.php", {
-        "action": "query", "format": "json", "generator": "search",
-        "gsrsearch": f"filetype:video {query}", "gsrnamespace": "6",
-        "gsrlimit": "8", "prop": "imageinfo", "iiprop": "url|mime|size"})
-    pages = (d.get("query") or {}).get("pages") or {}
-    out = []
-    for p in sorted(pages.values(), key=lambda x: x.get("index", 99)):
-        ii = (p.get("imageinfo") or [{}])[0]
-        mime = ii.get("mime", "")
-        size = int(ii.get("size") or 0)
-        url = ii.get("url")
-        if url and mime.startswith("video/") and (size == 0 or size <= 60_000_000):
-            out.append({"url": url, "text": p.get("title") or p.get("pageid", "")})
-    return out
-
+    return _wikimedia_search(query, "video", limit=12)
 
 def openverse_images(query):
     d = get("https://api.openverse.org/v1/images/", {"q": query, "page_size": 3})
@@ -199,34 +218,61 @@ def openverse_images(query):
 
 
 def archive_videos(query):
+    """Search Internet Archive items, then resolve real downloadable video files."""
     query = provider_query(query)
-    d = get("https://archive.org/advancedsearch.php", {
-        "q": f"({query}) AND mediatype:(movies)", "fl[]": "identifier",
-        "rows": "5", "output": "json"})
-    out = []
+    terms = [t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) >= 4]
+    phrase = " AND ".join(f'"{t}"' for t in terms[:6]) if terms else f'"{query}"'
+    try:
+        d = get("https://archive.org/advancedsearch.php", {
+            "q": f"mediatype:movies AND ({phrase})",
+            "fl[]": "identifier,title,description",
+            "rows": "10", "output": "json",
+        })
+    except Exception as e:
+        log(f"  archive search failed for {query!r}: {e}")
+        return []
+
+    out, seen = [], set()
     for doc in ((d.get("response") or {}).get("docs") or []):
         ident = doc.get("identifier")
         if not ident:
             continue
         try:
-            m = get(f"https://archive.org/metadata/{ident}")
-            candidates = [
-                f for f in m.get("files", [])
-                if Path(f.get("name", "")).suffix.lower() in VIDEO_EXTENSIONS
-                and int(f.get("size", 0) or 0) < 60_000_000
-            ]
-            # Keep several candidates from each item. Archive can expose one
-            # forbidden/broken derivative while another derivative is usable.
+            m = get(f"https://archive.org/metadata/{quote(str(ident), safe='')}")
             title = str(doc.get("title") or ident)
-            for f in candidates[:4]:
-                out.append({
-                    "url": f"https://archive.org/download/{ident}/{quote(f['name'], safe='')}",
-                    "text": f"{title} {f.get('name', '')}",
-                })
-        except Exception:
-            continue
+            description = str(doc.get("description") or "")
+            files = m.get("files") or []
+            candidates = []
+            for f in files:
+                name = str(f.get("name") or "")
+                suffix = Path(name).suffix.lower()
+                fmt = str(f.get("format") or "").lower()
+                try:
+                    size = int(f.get("size") or 0)
+                except (TypeError, ValueError):
+                    size = 0
+                if not name or name.startswith("__ia_") or f.get("private"):
+                    continue
+                if suffix not in VIDEO_EXTENSIONS and not any(x in fmt for x in ("video", "mpeg4", "h.264", "webm")):
+                    continue
+                if size and (size < 50_000 or size > 120_000_000):
+                    continue
+                rank = 0
+                if suffix == ".mp4": rank += 8
+                elif suffix == ".webm": rank += 7
+                elif suffix in (".mov", ".m4v"): rank += 5
+                if "mpeg4" in fmt or "h.264" in fmt: rank += 3
+                candidates.append((rank, size, name, fmt))
+            candidates.sort(reverse=True)
+            for _, _, name, fmt in candidates[:6]:
+                url = f"https://archive.org/download/{quote(str(ident), safe='')}/{quote(name, safe='')}"
+                if url in seen:
+                    continue
+                seen.add(url)
+                out.append({"url": url, "text": f"{title} {description} {name} {fmt}"})
+        except Exception as e:
+            log(f"  archive item {ident} failed: {e}")
     return out
-
 
 def pollinations_image(query, slot):
     """FREE key-less AI image. Scene imagery only (prompt forbids people)."""
@@ -401,26 +447,40 @@ def media_duration(path):
 
 
 def download(url, dest):
-    try:
-        with requests.get(url, stream=True, headers=HTTP_HEADERS, timeout=DL_T if "pollinations" not in url else AI_T) as r:
-            r.raise_for_status()
-            tmp = dest.with_suffix(dest.suffix + ".part")
-            with open(tmp, "wb") as f:
-                for chunk in r.iter_content(1 << 16):
-                    f.write(chunk)
-            if dest.suffix in (".jpg", ".jpeg") and not _is_jpeg(tmp):
-                tmp.unlink(missing_ok=True)
-                return False
-            if dest.suffix in VIDEO_EXTENSIONS and not _is_video(tmp):
-                tmp.unlink(missing_ok=True)
-                log(f"invalid video rejected: {url}")
-                return False
-            tmp.replace(dest)
-        return dest.exists() and dest.stat().st_size > 5000
-    except Exception as e:
-        log(f"download failed {url}: {e}")
-        return False
-
+    """Download, validate and retry media from Wikimedia/Archive/Pexels."""
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        try:
+            with requests.get(
+                url,
+                stream=True,
+                headers={**HTTP_HEADERS, "Accept-Encoding": "identity"},
+                timeout=(10, DL_T if ("archive.org" in url or "wikimedia.org" in url) else AI_T),
+                allow_redirects=True,
+            ) as r:
+                r.raise_for_status()
+                ctype = str(r.headers.get("Content-Type") or "").lower()
+                if dest.suffix in VIDEO_EXTENSIONS and "text/html" in ctype:
+                    raise ValueError(f"provider returned HTML instead of video: {ctype}")
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(1 << 16):
+                        if chunk:
+                            f.write(chunk)
+                if dest.suffix in (".jpg", ".jpeg") and not _is_jpeg(tmp):
+                    raise ValueError("downloaded image is not JPEG")
+                if dest.suffix in VIDEO_EXTENSIONS and not _is_video(tmp):
+                    raise ValueError("downloaded video failed ffprobe validation")
+                if tmp.stat().st_size <= 5000:
+                    raise ValueError("downloaded media is too small")
+                tmp.replace(dest)
+                return True
+        except Exception as e:
+            tmp.unlink(missing_ok=True)
+            log(f"download failed attempt {attempt}/{attempts} {url}: {e}")
+            if attempt < attempts:
+                time.sleep(0.8 * attempt)
+    return False
 
 def _save(url, prefix, kind, query, orient, slot, source):
     path_suffix = Path(url.split("?", 1)[0]).suffix.lower()
@@ -453,18 +513,9 @@ def fetch_image(query, orient, slot):
             if r[0]:
                 return r
 
-    if not face:  # AI + random-photo layers are FORBIDDEN for real-person queries
-        url = _pick(with_retry(lambda: pollinations_image(query, slot)), slot)
-        if url:
-            r = _save(url, "va", "img", query, orient, slot, "ai-free")
-            if r[0]:
-                return r
-        url = _pick(with_retry(lambda: loremflickr_image(query, slot)), slot)
-        if url:
-            r = _save(url, "va", "img", query, orient, slot, "loremflickr")
-            if r[0]:
-                return r
-
+    # Pollinations/LoremFlickr are intentionally not production-critical.
+    # Recent production runs returned 402/401, so they must never consume the
+    # acquisition budget before deterministic local fallbacks.
     b = bundled_image(query)
     if b and slot == 0:
         dest = VIS / f"va-{h('img|' + query + '|' + orient + '|0')}{b.suffix}"
