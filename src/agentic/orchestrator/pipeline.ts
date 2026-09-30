@@ -202,10 +202,10 @@ export async function runAgenticPipeline(
 
     // Long-form runtime is achieved with spoken content, never with a silent
     // tail, artificial pauses, or an artificially slowed voice. For the production
-    // long-form format, narration should be 780–800 words; 790 is the generation
-    // midpoint. REAL TTS duration remains authoritative for the hard 120s gate.
+    // long-form format, narration must be 780–800 words and REAL TTS duration must
+    // reach at least 180s. Natural TTS above 180s is valid long-form output.
     const isLongForm = req.platform === 'youtube' && (req.maxRuntimeSec ?? 0) >= 120;
-    const longFormRequiredSec = isLongForm ? 120 : 0;
+    const longFormRequiredSec = isLongForm ? 180 : 0;
     const LONG_FORM_MIN_WORDS = 780;
     const LONG_FORM_TARGET_WORDS = 790;
     const LONG_FORM_MAX_WORDS = 800;
@@ -326,7 +326,7 @@ export async function runAgenticPipeline(
         variablePacing: req.variablePacing ?? true,
         brain,
         platform: req.platform,
-        targetRuntimeSec: req.maxRuntimeSec,
+        targetRuntimeSec: isLongForm ? undefined : req.maxRuntimeSec,
     });
 
     if (isLongForm) {
@@ -830,9 +830,9 @@ export async function runAgenticPipeline(
     }
 
     // Long-form duration correction MUST happen before visual acquisition.
-    // If real TTS is still below 120s, expand the existing scene narration once,
-    // regenerate TTS, and measure again. No silence padding, time-stretching,
-    // fake frames, or duration-gate changes are permitted.
+    // If real TTS is below 180s, expand/rebuild the narration within the existing
+    // 780–800 word contract, regenerate TTS, and measure again. Natural TTS above
+    // 180s is accepted; no artificial silence, time-stretching, or fake frames.
     const longFormDurationReport = {
         requiredSec: longFormRequiredSec,
         targetWords: isLongForm ? LONG_FORM_TARGET_WORDS : 0,
@@ -944,7 +944,7 @@ export async function runAgenticPipeline(
                     variablePacing: req.variablePacing ?? true,
                     brain,
                     platform: req.platform,
-                    targetRuntimeSec: req.maxRuntimeSec,
+                    targetRuntimeSec: isLongForm ? undefined : req.maxRuntimeSec,
                 });
 
                 // Validate the words that will actually be spoken after parsing.
@@ -1136,7 +1136,9 @@ export async function runAgenticPipeline(
             : undefined;
     const gate = runFinalGate(plan, candidates, decisions, manifest, {
         ...(gatePlatform ? { platform: gatePlatform } : {}),
-        ...(req.maxRuntimeSec ? { maxRuntimeSec: req.maxRuntimeSec } : {}),
+        // Long-form YouTube uses the gate's production ceiling (600s), not the
+        // legacy job maxRuntimeSec value that previously capped it at 120s.
+        ...(!isLongForm && req.maxRuntimeSec ? { maxRuntimeSec: req.maxRuntimeSec } : {}),
     });
     emit({ stage: 'gate', percent: 100, message: gate.pass ? 'GATE PASS' : 'GATE FAIL' });
 

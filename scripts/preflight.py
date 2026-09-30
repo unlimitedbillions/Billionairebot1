@@ -20,7 +20,7 @@ JOBS = ROOT / "input" / "scripts" / "render-jobs.json"
 SRC = ROOT / "input" / "scripts" / "billionaire-stories.json"
 MANIFEST = ROOT / "cache" / "assets.json"
 SHORT_WORD_BAND = (100, 175)
-LONG_MIN_WORDS = 540
+LONG_MIN_WORDS = 780
 W = 34
 VISUAL_MARKER_RE = re.compile(r"\[Visual:\s*[^\]]+?\s*\]")
 

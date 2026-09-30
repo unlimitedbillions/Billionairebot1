@@ -432,11 +432,11 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
         // never discover or download remote visual assets. Consume only local
         // prepared material; image scenes may use an offline generated fallback.
         if (zeroNetwork) {
-            const fb = effectiveKind === 'image' ? generateFallbackVisual(scene, effectiveKind, dir, 0) : null;
+            const fb = generateFallbackVisual(scene, effectiveKind, dir, 0);
             if (fb) {
                 candidates.push({ kind: effectiveKind, sceneIndex: i, candidateIndex: 1, localPath: fb.localPath, url: fb.url, source: fb.source, license: fb.license, licenseUrl: fb.licenseUrl, keywords: scene.searchKeywords });
             } else {
-                console.warn(`zero-network asset miss: scene ${i} has no prepared local ${effectiveKind}`);
+                console.warn(`zero-network asset miss: scene ${i} has no prepared local ${effectiveKind}; no fallback was available`);
             }
             continue;
         }
