@@ -200,18 +200,17 @@ export async function runAgenticPipeline(
         targetRuntimeSec: isLongForm ? undefined : req.maxRuntimeSec,
     });
 
-    if (isLongForm) {
-        const plannedSpokenWords = countSpokenWords(plan.scenes.map((s) => s.voiceoverText).join(' '));
-        if (plannedSpokenWords < LONG_FORM_MIN_WORDS || plannedSpokenWords > LONG_FORM_MAX_WORDS) {
-            throw new Error(
-                'LONGFORM_WORDCOUNT_FAIL: final parsed narration is ' + plannedSpokenWords +
-                ' spoken words; required ' + LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS +
-                ' before TTS',
-            );
-        }
+    // Do not reject narration by a fixed word-count ceiling here.
+    // Actual TTS duration is the source of truth. The calibration loop below
+    // measures the first real speech pass, calculates the required word count
+    // from that measurement, rewrites within a controlled tolerance, and
+    // measures again until the format's runtime range is satisfied.
+    if (durationSpec) {
+        const initialWords = countSpokenWords(plan.scenes.map((s) => s.voiceoverText).join(' '));
         logInfo(
-            'LONGFORM_WORDCOUNT_CHECK spoken=' + plannedSpokenWords +
-            ' required=' + LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS,
+            'TTS_INITIAL_WORDCOUNT format=' + durationSpec.label +
+            ' spoken=' + initialWords +
+            ' (measured TTS will determine the correction target)',
         );
     }
 
