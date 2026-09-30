@@ -221,7 +221,7 @@ def archive_videos(query):
     """Search Internet Archive items, then resolve real downloadable video files."""
     query = provider_query(query)
     terms = [t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) >= 4]
-    phrase = " AND ".join(f'"{t}"' for t in terms[:6]) if terms else f'"{query}"'
+    phrase = " OR ".join(f'"{t}"' for t in terms[:8]) if terms else f'"{query}"'
     try:
         d = get("https://archive.org/advancedsearch.php", {
             "q": f"mediatype:movies AND ({phrase})",
@@ -688,7 +688,7 @@ def process_jobs(jobs):
 
 def main():
     if not SRC.exists():
-        sys.exit("[assets] source json missing: input/scripts/billionaire-stories.json")
+        sys.exit("[assets] selected production jobs missing: input/scripts/render-jobs.json")
     jobs = json.loads(SRC.read_text())
     if not isinstance(jobs, list) or not jobs:
         sys.exit("[assets] render-jobs.json is empty; production selector must choose one person first")
