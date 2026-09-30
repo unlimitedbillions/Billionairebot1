@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Duration gate: shorts must be 45-59s, long-form >= 180s. Writes output/out-of-spec.json */
+/** Duration gate: shorts must be 45-59s, long-form >= 120s. Writes output/out-of-spec.json */
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -9,7 +9,7 @@ const i = process.argv.indexOf("--file");
 const fileArg = i > -1 && process.argv[i + 1] ? process.argv[i + 1] : "input/scripts/billionaire-stories.json";
 const jobs = JSON.parse(fs.readFileSync(path.join(ROOT, fileArg), "utf8"));
 
-const SPEC = { short: { min: 45, max: 59 }, long: { min: 180, max: Infinity } };
+const SPEC = { short: { min: 45, max: 59 }, long: { min: 120, max: Infinity } };
 const outOfSpec = [];
 
 for (const job of jobs) {

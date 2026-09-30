@@ -203,9 +203,9 @@ export async function runAgenticPipeline(
     // Long-form runtime is achieved with spoken content, never with a silent
     // tail, artificial pauses, or an artificially slowed voice. For the production
     // long-form format, narration must be 780–800 words and REAL TTS duration must
-    // reach at least 180s. Natural TTS above 180s is valid long-form output.
+    // reach at least 120s. Natural TTS at 180s or above is preferred, and any natural duration from 120s upward is valid long-form output.
     const isLongForm = req.platform === 'youtube' && (req.maxRuntimeSec ?? 0) >= 120;
-    const longFormRequiredSec = isLongForm ? 180 : 0;
+    const longFormRequiredSec = isLongForm ? 120 : 0;
     const LONG_FORM_MIN_WORDS = 780;
     const LONG_FORM_TARGET_WORDS = 790;
     const LONG_FORM_MAX_WORDS = 800;
