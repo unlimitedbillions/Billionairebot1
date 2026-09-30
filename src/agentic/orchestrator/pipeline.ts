@@ -46,75 +46,25 @@ async function alignVoiceoverTimeline(
     maxRuntimeSec: number | undefined,
     workspace: AgenticWorkspace,
 ): Promise<void> {
-    // Long-form is driven entirely by natural narration. There is no
-    // 120s target padding and no 120s ceiling here; the long-form duration
-    // gate is satisfied by generating enough spoken content before TTS.
-    const target = platform === 'shorts'
-        ? Math.min(maxRuntimeSec ?? 57, 50)
-        : 0;
-    if (!(target > 0) || !voiceovers.scenes?.length) return;
-
+    // TTS is the timing source of truth. Correction happens before acquisition;
+    // this function only synchronizes scene metadata with natural measured audio.
+    // It NEVER pads or time-stretches speech to hit a target.
+    void platform;
+    void maxRuntimeSec;
+    void workspace;
     const usable = voiceovers.scenes.filter((v) =>
         Number.isFinite(v.durationSec) && v.durationSec > 0 && fs.existsSync(v.audioPath),
     );
     if (usable.length !== plan.scenes.length) {
-        logWarn(`⚠ narration timeline alignment skipped: only ${usable.length}/${plan.scenes.length} scene audio tracks are available`);
+        logWarn('⚠ narration timeline sync skipped: only ' + usable.length + '/' + plan.scenes.length + ' scene audio tracks are available');
         return;
     }
-
-    const naturalTotal = usable.reduce((sum, v) => sum + v.durationSec, 0);
-    if (naturalTotal >= target - 0.05) {
-        plan.totalDurationSec = naturalTotal;
-        return;
-    }
-
-    const pauseSec = (target - naturalTotal) / usable.length;
-    // Never manufacture an unusually slow video from a tiny narration. If the
-    // gap is larger than this, the script itself needs more spoken content.
-    if (pauseSec > 1.5) {
-        logWarn(`⚠ narration timeline gap ${pauseSec.toFixed(2)}s/scene exceeds 1.5s; preserving natural TTS`);
-        plan.totalDurationSec = naturalTotal;
-        return;
-    }
-
-    const staged: { voice: typeof usable[number]; output: string; durationSec: number }[] = [];
     for (const v of usable) {
-        const sceneTarget = v.durationSec + pauseSec;
-        const output = path.join(
-            workspace.root,
-            'audio',
-            `narration-aligned-${v.sceneIndex + 1}.wav`,
-        );
-        const code = await runFfmpeg([
-            '-i', v.audioPath,
-            '-af', `apad=pad_dur=${pauseSec.toFixed(3)}`,
-            '-t', sceneTarget.toFixed(3),
-            '-c:a', 'pcm_s16le',
-            '-y', output,
-        ], 30000);
-        if (code !== 0 || !fs.existsSync(output)) {
-            logWarn(`⚠ narration timeline padding failed for scene ${v.sceneIndex + 1}; keeping original audio`);
-            return;
-        }
-        const measured = await estimateAudioDurationSafe(output);
-        if (!(measured > 0) || Math.abs(measured - sceneTarget) > 0.15) {
-            logWarn(`⚠ narration timeline probe mismatch for scene ${v.sceneIndex + 1}: expected ${sceneTarget.toFixed(2)}s, got ${measured.toFixed(2)}s`);
-            return;
-        }
-        staged.push({ voice: v, output, durationSec: measured });
+        const scene = plan.scenes.find((s) => s.sceneNumber === v.sceneIndex + 1);
+        if (scene) scene.durationSec = v.durationSec;
     }
-
-    for (const item of staged) {
-        item.voice.audioPath = item.output;
-        item.voice.durationSec = item.durationSec;
-        const scene = plan.scenes.find((s) => s.sceneNumber === item.voice.sceneIndex + 1);
-        if (scene) scene.durationSec = item.durationSec;
-    }
-    plan.totalDurationSec = staged.reduce((sum, item) => sum + item.durationSec, 0);
-    logInfo(
-        `🎬 narration-driven timeline: natural ${naturalTotal.toFixed(1)}s → ${plan.totalDurationSec.toFixed(1)}s ` +
-        `(target ${target}s, ${pauseSec.toFixed(2)}s breathing room/scene; TTS remains natural speed)`,
-    );
+    plan.totalDurationSec = usable.reduce((sum, v) => sum + v.durationSec, 0);
+    logInfo('🎬 narration-driven timeline synchronized to measured TTS: ' + plan.totalDurationSec.toFixed(1) + 's');
 }
 
 export async function runAgenticPipeline(
@@ -760,6 +710,7 @@ export async function runAgenticPipeline(
         maximumSec: durationSpec?.maxSec ?? 0,
         attempts: [] as { attempt: number; measuredSec: number; currentWords: number; requiredWords: number }[],
         passedBeforeVisualAcquisition: !durationSpec,
+        finalMeasuredSec: 0,
     };
 
     const hasRealTts = () =>
