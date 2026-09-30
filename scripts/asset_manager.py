@@ -47,6 +47,12 @@ FALLBACK = ROOT / "assets" / "fallback"
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "").strip()
 API_T = 10           # provider API timeout
 RETRY = 2             # bounded provider retries
+
+# Production video-provider order is deliberate: Pexels gets the first
+# opportunity for every b-roll scene, then Wikimedia, then Internet Archive.
+# Keep this ordered list authoritative so a fallback cannot silently become
+# the primary video source.
+VIDEO_PROVIDER_ORDER = ("pexels", "wikimedia", "archive")
 MAX_REUSE = 2        # one file serves at most 2 scenes
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi", ".mpeg", ".mpg", ".m2ts", ".mts", ".ts", ".ogv", ".3gp", ".flv", ".wmv", ".asf"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -549,10 +555,16 @@ def fetch_image(query, orient, slot):
 def fetch_video(query, orient, slot, blocked=None):
     blocked = blocked or set()
 
-    # Tier 1: real footage from trusted/free providers.
-    for src, fn in (("pexels", lambda: pexels_videos(query, orient)),
-                    ("wikimedia", lambda: wikimedia_videos(query)),
-                    ("archive", lambda: archive_videos(query))):
+    # Tier 1: real footage. Pexels MUST be attempted first; the remaining
+    # providers are strictly ordered fallbacks.
+    video_fetchers = {
+        "pexels": lambda: pexels_videos(query, orient),
+        "wikimedia": lambda: wikimedia_videos(query),
+        "archive": lambda: archive_videos(query),
+    }
+    for src in VIDEO_PROVIDER_ORDER:
+        fn = video_fetchers[src]
+        log(f"  video provider attempt: {src} (priority {VIDEO_PROVIDER_ORDER.index(src) + 1}/{len(VIDEO_PROVIDER_ORDER)})")
         candidates = with_retry(fn)
         if not candidates:
             continue
