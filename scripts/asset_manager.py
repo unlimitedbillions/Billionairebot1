@@ -49,6 +49,7 @@ API_T = 10           # provider API timeout
 RETRY = 2             # bounded provider retries
 MAX_REUSE = 2        # one file serves at most 2 scenes
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi", ".mpeg", ".mpg", ".m2ts", ".mts", ".ts", ".ogv", ".3gp", ".flv", ".wmv", ".asf"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 DL_T = 20            # keep asset prep bounded; local/generated fallbacks handle misses
 AI_T = 40            # key-less AI image timeout
 WPS = 3.0
@@ -406,9 +407,26 @@ def semantic_asset_reuse(query, orient, blocked):
 
 
 # ---------------- DOWNLOAD + VALIDATE ----------------------------------------
-def _is_jpeg(p):
-    with open(p, "rb") as f:
-        return f.read(3) == b"\xff\xd8\xff"
+def _is_image(p):
+    """Validate that a downloaded still is an actually decodable image."""
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_type,width,height",
+             "-of", "json", str(p)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if probe.returncode != 0:
+            return False
+        data = json.loads(probe.stdout or "{}")
+        stream = (data.get("streams") or [{}])[0]
+        return (
+            stream.get("codec_type") == "video"
+            and int(stream.get("width") or 0) > 0
+            and int(stream.get("height") or 0) > 0
+        )
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return False
 
 
 def _is_video(p):
@@ -461,14 +479,14 @@ def download(url, dest):
             ) as r:
                 r.raise_for_status()
                 ctype = str(r.headers.get("Content-Type") or "").lower()
-                if dest.suffix in VIDEO_EXTENSIONS and "text/html" in ctype:
-                    raise ValueError(f"provider returned HTML instead of video: {ctype}")
+                if "text/html" in ctype or "application/json" in ctype:
+                    raise ValueError(f"provider returned a non-media response: {ctype}")
                 with open(tmp, "wb") as f:
                     for chunk in r.iter_content(1 << 16):
                         if chunk:
                             f.write(chunk)
-                if dest.suffix in (".jpg", ".jpeg") and not _is_jpeg(tmp):
-                    raise ValueError("downloaded image is not JPEG")
+                if dest.suffix in IMAGE_EXTENSIONS and not _is_image(tmp):
+                    raise ValueError("downloaded image failed ffprobe validation")
                 if dest.suffix in VIDEO_EXTENSIONS and not _is_video(tmp):
                     raise ValueError("downloaded video failed ffprobe validation")
                 if tmp.stat().st_size <= 5000:
@@ -487,7 +505,7 @@ def _save(url, prefix, kind, query, orient, slot, source):
     if prefix in ("vv", "rv"):
         ext = path_suffix if path_suffix in VIDEO_EXTENSIONS else ".mp4"
     else:
-        ext = ".png" if path_suffix == ".png" else ".jpg"
+        ext = path_suffix if path_suffix in IMAGE_EXTENSIONS else ".jpg"
     dest = VIS / f"{prefix}-{h(kind + '|' + query + '|' + orient + '|' + str(slot))}{ext}"
     if download(url, dest):
         return dest.name, source
