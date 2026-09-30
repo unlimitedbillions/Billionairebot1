@@ -37,7 +37,7 @@ from urllib.parse import quote, unquote
 import requests
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "input" / "scripts" / "billionaire-stories.json"
+SRC = ROOT / "input" / "scripts" / "render-jobs.json"
 OUT_JOBS = ROOT / "input" / "scripts" / "render-jobs.json"
 VIS = ROOT / "input" / "visuals"
 CACHE = ROOT / "cache"
@@ -690,7 +690,17 @@ def main():
     if not SRC.exists():
         sys.exit("[assets] source json missing: input/scripts/billionaire-stories.json")
     jobs = json.loads(SRC.read_text())
-    log(f"planning {len(jobs)} episode(s); prefetching images + clips BEFORE render...")
+    if not isinstance(jobs, list) or not jobs:
+        sys.exit("[assets] render-jobs.json is empty; production selector must choose one person first")
+    people = sorted({
+        "musk" if "musk" in (" ".join([str(j.get("id","")), str(j.get("title","")), str(j.get("topic",""))]).lower())
+        else "bezos" if "bezos" in (" ".join([str(j.get("id","")), str(j.get("title","")), str(j.get("topic",""))]).lower())
+        else "other"
+        for j in jobs
+    })
+    if len(jobs) != 2 or set(j.get("platform") for j in jobs) != {"shorts", "youtube"}:
+        sys.exit(f"[assets] expected exactly one short + one long production pair; got {len(jobs)} jobs / people={people}")
+    log(f"planning {len(jobs)} episode(s) for {people}; prefetching images + clips BEFORE render...")
 
     episodes, rewritten = process_jobs(jobs)
 
