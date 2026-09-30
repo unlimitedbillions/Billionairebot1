@@ -22,6 +22,8 @@ export interface GateOptions {
     platform?: 'shorts' | 'tiktok' | 'reels' | 'youtube';
     /** Explicit override for X5 runtime cap (seconds). */
     maxRuntimeSec?: number;
+    /** Minimum runtime required by the production format. */
+    minRuntimeSec?: number;
 }
 
 const RUNTIME_CAPS: Record<string, number> = { shorts: 60, tiktok: 180, reels: 90, youtube: 600 };
@@ -83,12 +85,15 @@ export function runFinalGate(
 
     // X5: total runtime within the platform cap.
     const cap = opts.maxRuntimeSec ?? RUNTIME_CAPS[opts.platform ?? 'shorts'] ?? 180;
-    const runtimeOk = planned <= cap;
+    const floor = opts.minRuntimeSec ?? 0;
+    const runtimeOk = planned >= floor && planned <= cap;
     checks.push({
         id: 'X5',
-        label: 'Runtime within limit',
+        label: 'Runtime within format range',
         pass: runtimeOk,
-        detail: `${planned}s <= ${cap}s${opts.platform ? ` (${opts.platform})` : ''}`,
+        detail: floor > 0
+            ? `${planned.toFixed(1)}s within ${floor}-${cap}s${opts.platform ? ` (${opts.platform})` : ''}`
+            : `${planned.toFixed(1)}s <= ${cap}s${opts.platform ? ` (${opts.platform})` : ''}`,
     });
 
     // X6: attribution completeness — every approved asset must carry a license
