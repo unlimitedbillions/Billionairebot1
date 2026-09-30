@@ -95,6 +95,65 @@ def check_scene_structure(rendered):
     return True, "scene narration inputs valid"
 
 
+def check_manifest_binding(rendered, manifest):
+    """Prove each final visual tag resolves to the exact manifest scene asset."""
+    if not rendered:
+        return False, "no render jobs"
+    if not manifest:
+        return False, "missing manifest"
+
+    episodes = {
+        str(ep.get("episode")): ep
+        for ep in manifest.get("episodes", [])
+        if isinstance(ep, dict)
+    }
+    problems = []
+
+    for job in rendered:
+        jid = str(job.get("id", "job"))
+        ep = episodes.get(jid)
+        if not ep:
+            problems.append(f"{jid}: manifest episode missing")
+            continue
+
+        markers = []
+        for line in str(job.get("script", "")).split("\n"):
+            markers.extend(m.group("val").strip() for m in VISUAL_MARKER_RE.finditer(line))
+        scenes = ep.get("scenes") or []
+
+        if len(markers) != len(scenes):
+            problems.append(f"{jid}: visual bindings {len(markers)} != manifest scenes {len(scenes)}")
+            continue
+
+        for idx, (marker, scene) in enumerate(zip(markers, scenes), 1):
+            asset = scene.get("asset") or scene.get("asset_video")
+            if not asset:
+                problems.append(f"{jid} scene {idx}: manifest asset missing")
+                continue
+
+            marker_name = Path(marker).name
+            asset_name = Path(str(asset)).name
+            if marker_name != asset_name:
+                problems.append(
+                    f"{jid} scene {idx}: tag {marker_name} != manifest {asset_name}"
+                )
+                continue
+
+            resolved = ROOT / str(asset)
+            if not resolved.exists():
+                problems.append(f"{jid} scene {idx}: asset file missing {asset}")
+                continue
+
+            if scene.get("type") == "broll":
+                valid, detail = probe_video(resolved)
+                if not valid:
+                    problems.append(f"{jid} scene {idx}: invalid video ({detail})")
+
+    if problems:
+        return False, "; ".join(problems[:6])
+    return True, "every render scene matches its manifest asset"
+
+
 def probe_video(path):
     """Return (ok, detail) only when ffprobe sees a real video stream with duration."""
     if not path.exists():
@@ -124,6 +183,7 @@ def gather():
     scenes = sum(visual_count(str(j.get("script", ""))) for j in rendered)
     narr_ok, narr_detail = check_narration(source, rendered)
     scene_ok, scene_detail = check_scene_structure(rendered)
+    binding_ok, binding_detail = check_manifest_binding(rendered, man)
 
     imgs_ok = imgs_tot = vids_ok = vids_tot = 0
     if man:
@@ -152,6 +212,7 @@ def gather():
         ("Scenes", scenes > 0, str(scenes)),
         ("Narration", narr_ok, narr_detail),
         ("Scene structure", scene_ok, scene_detail),
+        ("Scene bindings", binding_ok, binding_detail),
         ("Visual manifest", man is not None, ""),
         ("Images", imgs_tot > 0 and imgs_ok == imgs_tot, f"{imgs_ok}/{imgs_tot}"),
         ("Video clips", vids_tot > 0 and vids_ok == vids_tot, f"{vids_ok}/{vids_tot}"),
