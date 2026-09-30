@@ -1045,9 +1045,10 @@ export async function runAgenticPipeline(
             : undefined;
     const gate = runFinalGate(plan, candidates, decisions, manifest, {
         ...(gatePlatform ? { platform: gatePlatform } : {}),
-        // Long-form YouTube uses the gate's production ceiling (600s), not the
-        // legacy job maxRuntimeSec value that previously capped it at 120s.
-        ...(!isLongForm && req.maxRuntimeSec ? { maxRuntimeSec: req.maxRuntimeSec } : {}),
+        ...(durationSpec ? {
+            minRuntimeSec: durationSpec.minSec,
+            maxRuntimeSec: durationSpec.maxSec,
+        } : (req.maxRuntimeSec ? { maxRuntimeSec: req.maxRuntimeSec } : {})),
     });
     emit({ stage: 'gate', percent: 100, message: gate.pass ? 'GATE PASS' : 'GATE FAIL' });
 
