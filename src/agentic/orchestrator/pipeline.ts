@@ -200,98 +200,19 @@ export async function runAgenticPipeline(
             ? LANGUAGE_DEFAULTS[req.language.toLowerCase().trim()]
             : req.voice;
 
-    // Long-form runtime is achieved with spoken content, never with a silent
-    // tail, artificial pauses, or an artificially slowed voice. For the production
-    // long-form format, narration must be 780–800 words and REAL TTS duration must
-    // reach at least 120s. Natural TTS at 180s or above is preferred, and any natural duration from 120s upward is valid long-form output.
+    // Production duration policy is format-driven and TTS-measured.
+    // Shorts: 50-60s. Long-form: 120-180s.
+    // IMPORTANT: do not pre-pad or pre-expand to a fixed word count. The first
+    // real TTS pass establishes the speaker's actual words-per-second, then the
+    // correction loop calculates the required word count from that measurement.
     const isLongForm = req.platform === 'youtube' && (req.maxRuntimeSec ?? 0) >= 120;
-    const longFormRequiredSec = isLongForm ? 120 : 0;
-    const LONG_FORM_MIN_WORDS = 780;
-    const LONG_FORM_TARGET_WORDS = 790;
-    const LONG_FORM_MAX_WORDS = 800;
+    const durationSpec = isLongForm
+        ? { minSec: 120, targetSec: 150, maxSec: 180, label: 'long' }
+        : req.platform === 'shorts'
+          ? { minSec: 50, targetSec: 55, maxSec: 60, label: 'short' }
+          : null;
     const countWords = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
-    const countSpokenWords = (text: string) =>
-        countWords(text.replace(/\[[^\]]*\]/g, ' '));
-
-    // Production-safe fallback for environments where no LLM model key/driver is
-    // available. The long-form gate must not depend on an optional model merely to
-    // reach the required narration length. These additions contain no new factual
-    // claims; they provide transitions/context that can be spoken naturally.
-    const expandLongFormDeterministically = (narration: string): string => {
-        let result = narration.replace(/\s+/g, ' ').trim();
-        const additions = [
-            'Taken together, these moments show how the story developed through a series of choices, setbacks, adjustments, and opportunities rather than one sudden turning point.',
-            'This part of the journey also matters because it connects the earlier struggle with the decisions that shaped what came next.',
-            'Instead of treating the outcome as inevitable, it is more useful to see the pressure, uncertainty, and persistence visible throughout the story.',
-            'That context gives the audience a clearer sense of why the next chapter unfolded differently from the one before it.',
-            'As the story moves forward, the important thread is the relationship between decisions, consequences, and the ability to adapt when circumstances change.',
-            'The details are worth remembering because they reveal the process behind the headline, not just the result people recognize today.',
-            'Ultimately, the sequence makes the story easier to understand: progress came through repeated decisions, changing conditions, and responses to problems along the way.',
-            'With that context in place, the final outcome can be understood as part of a longer progression rather than an isolated moment.',
-            'This broader view keeps the narrative focused on the sequence of events and the lessons that can be drawn from the journey.',
-            'It also helps separate the memorable headline from the practical steps, decisions, and circumstances that made the story possible in the first place.',
-            'For the audience, those connections provide a smoother explanation of what happened, why it mattered, and how one stage naturally led into the next.',
-            'The purpose of these transitions is not to change the facts, but to make the spoken account complete, coherent, and easier to follow from beginning to end.',
-        ];
-        for (const addition of additions) {
-            const ctaMatch = result.match(/\s*(Subscribe for the next untold billionaire story[\s\S]*)$/i);
-            const next = ctaMatch
-                ? result.slice(0, ctaMatch.index ?? result.length).trimEnd() + ' ' + addition + ' ' + ctaMatch[1].trimStart()
-                : (result ? result + ' ' + addition : addition);
-            const words = countSpokenWords(next);
-            if (words <= LONG_FORM_MAX_WORDS) result = next;
-            if (words >= LONG_FORM_MIN_WORDS) break;
-        }
-        return result;
-    };
-    if (isLongForm) {
-        const initialWordCount = countSpokenWords(finalScript);
-        if (initialWordCount < LONG_FORM_MIN_WORDS || initialWordCount > LONG_FORM_MAX_WORDS) {
-            try {
-                const expanded = await bridge.completeJSON<{ script: string }>(
-                    'Expand this long-form billionaire story into NATURAL SPOKEN NARRATION of EXACTLY 780 TO 800 WORDS (target 790). Preserve every original fact and event. Add only relevant context, transitions, consequences, and concrete details supported by the supplied story. Do not repeat the conclusion. Return one continuous narration script with no headings, no visual tags, and no hashtags. Stay within the 780–800 word range.',
-                    JSON.stringify({
-                        title: req.title,
-                        topic: req.topic,
-                        originalScript: finalScript,
-                        minimumWords: LONG_FORM_MIN_WORDS,
-                        targetWords: LONG_FORM_TARGET_WORDS,
-                        maximumWords: LONG_FORM_MAX_WORDS,
-                    }),
-                    '{"script":"..."}',
-                );
-                const expandedWords = expanded?.script ? countSpokenWords(expanded.script) : 0;
-                if (expanded?.script && expandedWords >= LONG_FORM_MIN_WORDS && expandedWords <= LONG_FORM_MAX_WORDS) {
-                    finalScript = expanded.script.trim();
-                    logInfo('📝 long-form narration pre-TTS expansion: ' + expandedWords + ' words (target ' + LONG_FORM_TARGET_WORDS + ', range ' + LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS + ')');
-                } else {
-                    const fallbackScript = expandLongFormDeterministically(finalScript);
-                    const fallbackWords = countSpokenWords(fallbackScript);
-                    if (fallbackWords >= LONG_FORM_MIN_WORDS && fallbackWords <= LONG_FORM_MAX_WORDS) {
-                        finalScript = fallbackScript;
-                        logWarn('⚠ LLM long-form expansion unavailable/invalid; using deterministic narration expansion: ' + fallbackWords + ' words');
-                    } else {
-                        throw new Error(
-                            'LONGFORM_WORDCOUNT_FAIL: deterministic expansion could not produce a spoken narration within ' +
-                            LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS + ' words',
-                        );
-                    }
-                }
-            } catch (e: any) {
-                const fallbackScript = expandLongFormDeterministically(finalScript);
-                const fallbackWords = countWords(fallbackScript);
-                if (fallbackWords >= LONG_FORM_MIN_WORDS && fallbackWords <= LONG_FORM_MAX_WORDS) {
-                    finalScript = fallbackScript;
-                    logWarn('⚠ long-form narration expansion failed; using deterministic fallback: ' + fallbackWords + ' words');
-                } else {
-                    throw new Error(
-                        'LONGFORM_WORDCOUNT_FAIL: long-form narration expansion failed and deterministic fallback could not produce ' +
-                        LONG_FORM_MIN_WORDS + '-' + LONG_FORM_MAX_WORDS + ' spoken words: ' + (e?.message ?? e),
-                    );
-                }
-            }
-        }
-    }
+    const countSpokenWords = (text: string) => countWords(text.replace(/\[[^\]]*\]/g, ' '));
 
     const plan = await buildPlan(
         finalScript,
@@ -829,181 +750,218 @@ export async function runAgenticPipeline(
         });
     }
 
-    // Long-form duration correction MUST happen before visual acquisition.
-    // If real TTS is below 180s, expand/rebuild the narration within the existing
-    // 780–800 word contract, regenerate TTS, and measure again. Natural TTS above
-    // 180s is accepted; no artificial silence, time-stretching, or fake frames.
-    const longFormDurationReport = {
-        requiredSec: longFormRequiredSec,
-        targetWords: isLongForm ? LONG_FORM_TARGET_WORDS : 0,
-        minimumAcceptedWords: isLongForm ? LONG_FORM_MIN_WORDS : 0,
-        maximumAcceptedWords: isLongForm ? LONG_FORM_MAX_WORDS : 0,
-        ttsMeasuredSec: 0,
-        correctionAttempts: 0,
-        passedBeforeVisualAcquisition: !isLongForm,
+    // MEASURE -> CALCULATE WORD COUNT -> REGENERATE -> MEASURE AGAIN.
+    // The first TTS pass is the calibration pass. This prevents the old fixed
+    // 780-800 word assumption from turning a ~102s narration into ~180s.
+    const durationReport = {
+        format: durationSpec?.label ?? 'unbounded',
+        minimumSec: durationSpec?.minSec ?? 0,
+        targetSec: durationSpec?.targetSec ?? 0,
+        maximumSec: durationSpec?.maxSec ?? 0,
+        attempts: [] as { attempt: number; measuredSec: number; currentWords: number; requiredWords: number }[],
+        passedBeforeVisualAcquisition: !durationSpec,
     };
-    if (isLongForm) {
-        // A duration gate is meaningful only when every scene contains real speech.
-        // The speech controller has a last-resort silent WAV for ordinary renders;
-        // long-form must never count that silent fallback as successful narration.
-        const hasRealTts = () =>
-            Boolean(voiceovers?.voiceoverDriven) &&
-            (voiceovers?.scenes ?? []).length === plan.scenes.length &&
-            (voiceovers?.scenes ?? []).every((v) => fs.existsSync(v.audioPath) && !/_silent\\.(wav|mp3|m4a|ogg)$/i.test(v.audioPath));
+
+    const hasRealTts = () =>
+        Boolean(voiceovers?.voiceoverDriven) &&
+        (voiceovers?.scenes ?? []).length === plan.scenes.length &&
+        (voiceovers?.scenes ?? []).every((v) =>
+            fs.existsSync(v.audioPath) &&
+            Number(v.durationSec) > 0 &&
+            !/_silent\.(wav|mp3|m4a|ogg)$/i.test(v.audioPath),
+        );
+
+    const measureNarration = () =>
+        (voiceovers?.scenes ?? []).reduce((sum, v) => sum + (Number(v.durationSec) || 0), 0);
+
+    if (durationSpec) {
         if (!hasRealTts()) {
-            logWarn('⚠ long-form TTS stage returned incomplete/non-speech audio; retrying the full narration through Edge-TTS before duration measurement');
-            voiceovers = await generateAgenticVoiceovers(plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0]);
+            logWarn('⚠ initial TTS was incomplete/non-speech; retrying through the Edge-TTS fallback before measuring duration');
+            voiceovers = await generateAgenticVoiceovers(
+                plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0],
+            );
         }
         if (!hasRealTts()) {
-            throw new Error('LONGFORM_REAL_TTS_FAIL: no complete real-speech voiceover was produced for every scene');
+            throw new Error('REAL_TTS_DURATION_FAIL: complete real speech is required before duration calibration');
         }
-        const measureNarration = () => (voiceovers?.scenes ?? []).reduce((sum, v) => sum + (Number(v.durationSec) || 0), 0);
+
         let measuredSec = measureNarration();
-        longFormDurationReport.ttsMeasuredSec = measuredSec;
-        logInfo('LONGFORM_TTS_CHECK attempt=1 measured=' + measuredSec.toFixed(1) + 's required=' + longFormRequiredSec + 's');
+        let attempt = 1;
+        const MAX_DURATION_CORRECTIONS = 4;
+        let passed = measuredSec >= durationSpec.minSec && measuredSec <= durationSpec.maxSec;
 
-        // Keep correction at the script level, not a large scene-by-scene JSON contract.
-        // The previous contract was brittle: the model repeatedly returned an invalid
-        // 35-scene array, so a usable 780-800 word narration was discarded. A single
-        // continuous script is much easier for the model to satisfy and can then be
-        // deterministically re-parsed into scenes by our own parser.
-        const MAX_CORRECTION_ATTEMPTS = 3;
-        while (measuredSec < longFormRequiredSec && longFormDurationReport.correctionAttempts < MAX_CORRECTION_ATTEMPTS) {
-            longFormDurationReport.correctionAttempts += 1;
+        while (!passed && attempt <= MAX_DURATION_CORRECTIONS) {
+            const narration = plan.scenes.map((s) => s.voiceoverText).join(' ').replace(/\s+/g, ' ').trim();
+            const currentWords = countSpokenWords(narration);
+            if (currentWords < 1 || measuredSec <= 0) {
+                throw new Error('DURATION_WORD_CALC_FAIL: cannot calculate required word count from measured TTS');
+            }
 
-            const currentWords = countSpokenWords(plan.scenes.map((s) => s.voiceoverText).join(' '));
-            const deficitSec = longFormRequiredSec - measuredSec;
-            const targetWords = Math.min(
-                longFormDurationReport.maximumAcceptedWords,
-                Math.max(longFormDurationReport.targetWords, LONG_FORM_TARGET_WORDS),
-            );
+            // This is the requested calibration formula:
+            // required words = current spoken words × target duration / actual TTS duration.
+            const rawRequiredWords = Math.round(currentWords * durationSpec.targetSec / measuredSec);
+            const minWords = Math.max(1, Math.floor(currentWords * durationSpec.minSec / measuredSec * 0.97));
+            const maxWords = Math.max(minWords, Math.ceil(currentWords * durationSpec.maxSec / measuredSec * 1.03));
+            const requiredWords = Math.min(maxWords, Math.max(minWords, rawRequiredWords));
+
+            durationReport.attempts.push({
+                attempt,
+                measuredSec,
+                currentWords,
+                requiredWords,
+            });
+
             logInfo(
-                'LONGFORM_TTS_CORRECTION attempt=' + longFormDurationReport.correctionAttempts +
-                ' measured=' + measuredSec.toFixed(1) + 's deficit=' + deficitSec.toFixed(1) +
-                's currentWords=' + currentWords + ' targetWords=' + targetWords,
+                'TTS_DURATION_CALIBRATION format=' + durationSpec.label +
+                ' attempt=' + attempt +
+                ' measured=' + measuredSec.toFixed(1) + 's' +
+                ' currentWords=' + currentWords +
+                ' requiredWords=' + requiredWords +
+                ' target=' + durationSpec.targetSec + 's' +
+                ' range=' + durationSpec.minSec + '-' + durationSpec.maxSec + 's',
             );
 
-            try {
-                const currentNarration = plan.scenes.map((s) => s.voiceoverText).join(' ').replace(/\s+/g, ' ').trim();
-                const expanded = await bridge.completeJSON<{ script: string }>(
-                    'Expand this billionaire story into NATURAL SPOKEN NARRATION between 780 and 800 words (target 790). Preserve all existing facts, events, names, chronology, and tone. Add only relevant context, consequences, transitions, and concrete details supported by the existing narration. Do not repeat the conclusion. Do not add headings, visual tags, hashtags, meta commentary, or filler. Return ONE continuous narration script and nothing else. It is critical that the final script is between 780 and 800 words.',
-                    JSON.stringify({ title: req.title, topic: req.topic, requiredSec: longFormRequiredSec, measuredSec, targetWords, currentWords, narration: currentNarration }),
-                    '{"script":"one continuous 780-800 word narration"}',
-                );
+            const lowerWords = Math.max(1, Math.floor(requiredWords * 0.97));
+            const upperWords = Math.ceil(requiredWords * 1.03);
+            const direction = measuredSec < durationSpec.minSec ? 'expand' : 'tighten';
+            const instruction = direction === 'expand'
+                ? 'Expand the narration naturally.'
+                : 'Tighten the narration naturally without removing important facts.';
+            const rewrite = await bridge.completeJSON<{ script: string }>(
+                'Rewrite this billionaire story as natural spoken narration. ' + instruction +
+                ' Preserve names, chronology and existing factual claims. Do not invent facts. ' +
+                'Return one continuous narration with no headings, visual tags, hashtags or meta commentary. ' +
+                'Target exactly about ' + requiredWords + ' spoken words, accepting ' + lowerWords + '-' + upperWords +
+                ' words. The target was calculated from an actual TTS measurement, so stay close to it.',
+                JSON.stringify({
+                    title: req.title,
+                    topic: req.topic,
+                    currentNarration: narration,
+                    actualTtsSeconds: measuredSec,
+                    targetSeconds: durationSpec.targetSec,
+                    minimumSeconds: durationSpec.minSec,
+                    maximumSeconds: durationSpec.maxSec,
+                    currentWords,
+                    requiredWords,
+                    acceptedWordRange: [lowerWords, upperWords],
+                }),
+                '{"script":"..."}',
+            );
 
-                const candidate = typeof expanded?.script === 'string' ? expanded.script.replace(/\s+/g, ' ').trim() : '';
-                const candidateWords = candidate ? countSpokenWords(candidate) : 0;
-                let usableCandidate = candidate;
-                let usableCandidateWords = candidateWords;
-                if (!usableCandidate || usableCandidateWords < longFormDurationReport.minimumAcceptedWords || usableCandidateWords > longFormDurationReport.maximumAcceptedWords) {
-                    usableCandidate = expandLongFormDeterministically(currentNarration);
-                    usableCandidateWords = countSpokenWords(usableCandidate);
-                    if (usableCandidateWords >= longFormDurationReport.minimumAcceptedWords && usableCandidateWords <= longFormDurationReport.maximumAcceptedWords) {
-                        logWarn(
-                            '⚠ LLM long-form correction unavailable/invalid on attempt ' +
-                            longFormDurationReport.correctionAttempts + '; using deterministic fallback: ' + usableCandidateWords + ' words',
-                        );
-                    } else {
-                        logWarn(
-                            '⚠ long-form correction rejected on attempt ' +
-                            longFormDurationReport.correctionAttempts + ': ' + candidateWords +
-                            ' words; fallback produced ' + usableCandidateWords +
-                            '; required ' + longFormDurationReport.minimumAcceptedWords + '-' +
-                            longFormDurationReport.maximumAcceptedWords,
-                        );
-                        throw new Error(
-                            'LONGFORM_WORDCOUNT_FAIL: correction fallback could not produce ' +
-                            longFormDurationReport.minimumAcceptedWords + '-' + longFormDurationReport.maximumAcceptedWords + ' spoken words',
-                        );
-                    }
-                }
-                const candidateForPlan = usableCandidate;
+            let candidate = typeof rewrite?.script === 'string'
+                ? rewrite.script.replace(/\s+/g, ' ').trim()
+                : '';
 
-                // Rebuild the director plan from the corrected narration. This makes
-                // the final scene boundaries follow the final spoken script instead of
-                // forcing an LLM to manufacture a fragile scene-indexed JSON structure.
-                const correctedPlan = await buildPlan(
-                    candidateForPlan,
-                    {
-                        jobId,
-                        title: req.title,
-                        orientation: req.orientation ?? 'portrait',
-                        voice: resolvedVoice ?? 'en-US-JennyNeural',
-                        platform: req.platform,
-                        musicQuery: req.musicQuery,
-                        ...(req.personas ? { personas: req.personas } : {}),
-                        ...(req.defaultPersona ? { defaultPersona: req.defaultPersona } : {}),
-                        ...(req.scenePersonas ? { scenePersonas: req.scenePersonas } : {}),
-                        ...(req.dialogueVoices ? { dialogueVoices: req.dialogueVoices } : {}),
-                        ...(req.sceneDialogue ? { sceneDialogue: req.sceneDialogue } : {}),
-                    },
-                    parseScript,
-                );
-                await applyProEdits(correctedPlan, {
-                    hookFirst: req.hookFirst ?? true,
-                    variablePacing: req.variablePacing ?? true,
-                    brain,
-                    platform: req.platform,
-                    targetRuntimeSec: isLongForm ? undefined : req.maxRuntimeSec,
-                });
-
-                // Validate the words that will actually be spoken after parsing.
-                // Counting the raw LLM string alone can accidentally count visual
-                // tags/metadata that the parser removes from TTS.
-                const parsedSpokenWords = countSpokenWords(correctedPlan.scenes.map((s) => s.voiceoverText).join(' '));
-                if (parsedSpokenWords < longFormDurationReport.minimumAcceptedWords || parsedSpokenWords > longFormDurationReport.maximumAcceptedWords) {
-                    logWarn(
-                        '⚠ long-form correction rejected after scene parsing: ' +
-                        parsedSpokenWords + ' spoken words; required ' +
-                        longFormDurationReport.minimumAcceptedWords + '-' +
-                        longFormDurationReport.maximumAcceptedWords,
-                    );
-                    continue;
-                }
-
-                plan.scenes = correctedPlan.scenes;
-                plan.totalDurationSec = correctedPlan.totalDurationSec;
-                plan.musicQuery = correctedPlan.musicQuery;
-
-                const { runVoiceStage } = await import('../media/voice-controller.js');
-                const retry = await runVoiceStage(plan, voiceWorkspace, req.voice, (percent, message) => {
-                    emit({ stage: 'voiceover', percent, message: 'duration-correction: ' + message });
-                }, req.useClonedVoiceId, req.personas);
-                voiceovers = {
-                    scenes: retry.voices.map((v) => ({ sceneIndex: v.sceneIndex, audioPath: v.audioPath, durationSec: v.durationSec, captionSegments: [] })),
-                    voiceoverDriven: retry.voiceoverDriven,
-                    sidecars: [],
-                    fallbackUsed: retry.fallbackUsed,
-                };
-                if (!hasRealTts()) {
-                    logWarn('⚠ corrected long-form narration did not produce real speech for every scene; falling back to Edge-TTS');
-                    voiceovers = await generateAgenticVoiceovers(plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0]);
-                }
-                if (!hasRealTts()) {
-                    throw new Error('LONGFORM_REAL_TTS_FAIL: corrected narration did not produce complete real speech for every scene');
-                }
-
-                measuredSec = measureNarration();
-                longFormDurationReport.ttsMeasuredSec = measuredSec;
-                logInfo(
-                    'LONGFORM_TTS_CHECK attempt=' + (longFormDurationReport.correctionAttempts + 1) +
-                    ' measured=' + measuredSec.toFixed(1) + 's required=' + longFormRequiredSec + 's',
-                );
-            } catch (e: any) {
+            let candidateWords = candidate ? countSpokenWords(candidate) : 0;
+            if (!candidate || candidateWords < lowerWords || candidateWords > upperWords) {
                 logWarn(
-                    '⚠ long-form TTS correction failed on attempt ' +
-                    longFormDurationReport.correctionAttempts + ': ' + (e?.message ?? e),
+                    '⚠ duration correction returned ' + candidateWords +
+                    ' words; expected ' + lowerWords + '-' + upperWords +
+                    '. Retrying with the measured word target.',
+                );
+                attempt++;
+                continue;
+            }
+
+            const correctedPlan = await buildPlan(
+                candidate,
+                {
+                    jobId,
+                    title: req.title,
+                    orientation: req.orientation ?? 'portrait',
+                    voice: resolvedVoice ?? 'en-US-JennyNeural',
+                    platform: req.platform,
+                    musicQuery: req.musicQuery,
+                    ...(req.personas ? { personas: req.personas } : {}),
+                    ...(req.defaultPersona ? { defaultPersona: req.defaultPersona } : {}),
+                    ...(req.scenePersonas ? { scenePersonas: req.scenePersonas } : {}),
+                    ...(req.dialogueVoices ? { dialogueVoices: req.dialogueVoices } : {}),
+                    ...(req.sceneDialogue ? { sceneDialogue: req.sceneDialogue } : {}),
+                },
+                parseScript,
+            );
+            await applyProEdits(correctedPlan, {
+                hookFirst: req.hookFirst ?? true,
+                variablePacing: req.variablePacing ?? true,
+                brain,
+                platform: req.platform,
+                targetRuntimeSec: req.platform === 'shorts' ? 55 : undefined,
+            });
+
+            const parsedWords = countSpokenWords(correctedPlan.scenes.map((s) => s.voiceoverText).join(' '));
+            if (parsedWords < lowerWords || parsedWords > upperWords) {
+                logWarn(
+                    '⚠ duration correction rejected after parsing: ' + parsedWords +
+                    ' spoken words; expected ' + lowerWords + '-' + upperWords,
+                );
+                attempt++;
+                continue;
+            }
+
+            plan.scenes = correctedPlan.scenes;
+            plan.totalDurationSec = correctedPlan.totalDurationSec;
+            plan.musicQuery = correctedPlan.musicQuery;
+
+            let retryVoices: any;
+            try {
+                const { runVoiceStage } = await import('../media/voice-controller.js');
+                retryVoices = await runVoiceStage(
+                    plan,
+                    voiceWorkspace,
+                    req.voice,
+                    (percent, message) => emit({ stage: 'voiceover', percent, message: 'duration-calibration: ' + message }),
+                    req.useClonedVoiceId,
+                    req.personas,
+                );
+                voiceovers = {
+                    scenes: retryVoices.voices.map((v: any) => ({
+                        sceneIndex: v.sceneIndex,
+                        audioPath: v.audioPath,
+                        durationSec: v.durationSec,
+                        captionSegments: [],
+                    })),
+                    voiceoverDriven: retryVoices.voiceoverDriven,
+                    sidecars: [],
+                    fallbackUsed: retryVoices.fallbackUsed,
+                };
+            } catch {
+                voiceovers = await generateAgenticVoiceovers(
+                    plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0],
                 );
             }
+
+            if (!hasRealTts()) {
+                voiceovers = await generateAgenticVoiceovers(
+                    plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0],
+                );
+            }
+            if (!hasRealTts()) {
+                throw new Error('REAL_TTS_DURATION_FAIL: corrected narration did not produce complete real speech');
+            }
+
+            measuredSec = measureNarration();
+            attempt++;
+            passed = measuredSec >= durationSpec.minSec && measuredSec <= durationSpec.maxSec;
         }
 
-        if (measuredSec < longFormRequiredSec) {
-            longFormDurationReport.passedBeforeVisualAcquisition = false;
-            writeJson(voiceWorkspace, 'long-form-duration.json', longFormDurationReport);
-            throw new Error('LONGFORM_TTS_DURATION_FAIL: measured ' + measuredSec.toFixed(1) + 's, required ' + longFormRequiredSec + 's after ' + longFormDurationReport.correctionAttempts + ' correction attempt(s); visual acquisition blocked');
+        durationReport.passedBeforeVisualAcquisition = passed;
+        durationReport.finalMeasuredSec = measuredSec;
+        writeJson(voiceWorkspace, 'duration-calibration.json', durationReport);
+
+        if (!passed) {
+            throw new Error(
+                'TTS_DURATION_RANGE_FAIL: ' + durationSpec.label +
+                ' measured ' + measuredSec.toFixed(1) + 's; required ' +
+                durationSpec.minSec + '-' + durationSpec.maxSec + 's after ' +
+                durationReport.attempts.length + ' correction attempt(s)',
+            );
         }
-        longFormDurationReport.passedBeforeVisualAcquisition = true;
-        writeJson(voiceWorkspace, 'long-form-duration.json', longFormDurationReport);
+
+        logInfo(
+            'TTS_DURATION_PASS format=' + durationSpec.label +
+            ' measured=' + measuredSec.toFixed(1) + 's within ' +
+            durationSpec.minSec + '-' + durationSpec.maxSec + 's',
+        );
     }
 
     // Recompute the visual semantics only after the final narration exists and
