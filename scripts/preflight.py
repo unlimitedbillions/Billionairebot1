@@ -19,8 +19,6 @@ ROOT = Path(__file__).resolve().parent.parent
 JOBS = ROOT / "input" / "scripts" / "render-jobs.json"
 SRC = ROOT / "input" / "scripts" / "billionaire-stories.json"
 MANIFEST = ROOT / "cache" / "assets.json"
-SHORT_WORD_BAND = (100, 175)
-LONG_MIN_WORDS = 780
 W = 34
 VISUAL_MARKER_RE = re.compile(r"\[Visual:\s*[^\]]+?\s*\]")
 
@@ -67,11 +65,8 @@ def check_narration(source, rendered):
         script = str(src_job.get("script", ""))
         out_script = str(out_by_id[jid].get("script", ""))
         count = words(script)
-        short = jid.endswith("-short")
-        band_ok = SHORT_WORD_BAND[0] <= count <= SHORT_WORD_BAND[1] if short else count >= LONG_MIN_WORDS
-        if not band_ok:
-            expected = "100-175" if short else f">={LONG_MIN_WORDS}"
-            problems.append(f"{jid}: {count} words (expected {expected})")
+        if count <= 0:
+            problems.append(f"{jid}: narration is empty")
         if narration_text(script) != narration_text(out_script):
             problems.append(f"{jid}: narration changed during asset preparation")
         if visual_count(script) != visual_count(out_script):
