@@ -138,7 +138,7 @@ export async function runAgenticPipeline(
     const { optimizeHook } = await import('../operations/hook.js');
     const firstLine = script.split(/\n|\. |\.|\? |\?|! |!/)[0] ?? script;
     const hooked = await optimizeHook(firstLine, { useLlm: Boolean(req.optimizeHook), brain: brain.modelEnabled ? brain : undefined });
-    let finalScript = hooked.hook !== firstLine.trim()
+    const finalScript = hooked.hook !== firstLine.trim()
         ? script.replace(firstLine, hooked.hook)
         : script;
     if (hooked.method === 'llm') logInfo(`🪝 retention hook (LLM): "${hooked.hook}"`);
@@ -798,11 +798,11 @@ export async function runAgenticPipeline(
                 '{"script":"..."}',
             );
 
-            let candidate = typeof rewrite?.script === 'string'
+            const candidate = typeof rewrite?.script === 'string'
                 ? rewrite.script.replace(/\s+/g, ' ').trim()
                 : '';
 
-            let candidateWords = candidate ? countSpokenWords(candidate) : 0;
+            const candidateWords = candidate ? countSpokenWords(candidate) : 0;
             if (!candidate || candidateWords < lowerWords || candidateWords > upperWords) {
                 logWarn(
                     '⚠ duration correction returned ' + candidateWords +
