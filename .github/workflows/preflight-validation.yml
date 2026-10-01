@@ -79,7 +79,11 @@ jobs:
           mod.get = lambda *args, **kwargs: {'videos': [{'video_files': [{'file_type': 'video/mp4', 'width': 1280, 'link': 'https://cdn.example.test/test.mp4'}]}]}
           assert mod.pexels_videos('technology', 'landscape') == ['https://cdn.example.test/test.mp4']
           mod.get = original_get
-          png_b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+          import base64
+          import subprocess
+          tmp_png = Path('/tmp/gemini-validation.png')
+          subprocess.run(['ffmpeg', '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=64x64', '-frames:v', '1', str(tmp_png)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+          png_b64 = base64.b64encode(tmp_png.read_bytes()).decode()
           class FakeResponse:
               ok = True
               status_code = 200
