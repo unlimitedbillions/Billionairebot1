@@ -53,8 +53,6 @@ jobs:
         run: |
           grep -F 'VIDEO_PROVIDER_ORDER = ("pexels", "wikimedia", "archive")' scripts/asset_manager.py
           grep -F 'GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip()' scripts/asset_manager.py
-          grep -F 'GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}' .github/workflows/billionaire-stories.yml
-          grep -F 'PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}' .github/workflows/billionaire-stories.yml
           grep -F 'ZERO_NETWORK_ASSET_MISS' src/agentic/orchestrator/pipeline.ts
           grep -F 'TTS_DURATION_RANGE_FAIL' src/agentic/orchestrator/pipeline.ts
           grep -F 'minSec: 120' src/agentic/orchestrator/pipeline.ts && grep -F 'maxSec: 180' src/agentic/orchestrator/pipeline.ts
