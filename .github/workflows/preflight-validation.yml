@@ -1,0 +1,134 @@
+name: Preflight CI Validation
+
+on:
+  push:
+    branches:
+      - preflight/ci-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Python syntax validation
+        run: python -m py_compile scripts/asset_manager.py scripts/preflight.py
+
+      - name: Node syntax validation
+        run: node --check scripts/verify-durations.mjs
+
+      - name: Workflow/code contract checks
+        run: |
+          grep -F 'https://api.pexels.com/v1/videos/search' scripts/asset_manager.py
+          grep -F 'CI_ZERO_NETWORK: "1"' .github/workflows/billionaire-stories.yml
+          grep -F 'GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}' .github/workflows/billionaire-stories.yml
+          grep -F 'VIDEO_PROVIDER_ORDER = ("pexels", "wikimedia", "archive")' scripts/asset_manager.py
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Mock provider-path validation
+        env:
+          PEXELS_API_KEY: validation-key
+          GEMINI_API_KEY: validation-key
+        run: |
+          python - <<'PY'
+          import base64
+          import importlib.util
+          import os
+          from pathlib import Path
+
+          spec = importlib.util.spec_from_file_location('asset_manager', 'scripts/asset_manager.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          assert mod.VIDEO_PROVIDER_ORDER == ('pexels', 'wikimedia', 'archive')
+          assert mod.PEXELS_KEY == 'validation-key'
+          assert mod.GEMINI_KEY == 'validation-key'
+
+          original_get = mod.get
+          mod.get = lambda *args, **kwargs: {
+              'videos': [{
+                  'video_files': [{
+                      'file_type': 'video/mp4',
+                      'width': 1280,
+                      'link': 'https://cdn.example.test/test.mp4',
+                  }]
+              }]
+          }
+          videos = mod.pexels_videos('technology', 'landscape')
+          assert videos == ['https://cdn.example.test/test.mp4']
+          mod.get = original_get
+
+          class FakeResponse:
+              ok = True
+              status_code = 200
+              def json(self):
+                  return {'candidates': [{'content': {'parts': [{
+                      'inlineData': {
+                          'data': base64.b64encode(bytes.fromhex(
+                              '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489'
+                          )).decode()
+                      }
+                  }]}}]}
+
+          class FakeRequests:
+              def post(self, *args, **kwargs):
+                  return FakeResponse()
+
+          # The response above is intentionally replaced with a valid 1x1 PNG
+          # generated below so ffprobe validates the same way production does.
+          png_b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+          class RealFakeResponse:
+              ok = True
+              status_code = 200
+              def json(self):
+                  return {'candidates': [{'content': {'parts': [{'inlineData': {'data': png_b64}}]}}]}
+          class RealFakeRequests:
+              def post(self, *args, **kwargs):
+                  assert args[0].endswith('/v1/models/gemini-2.5-flash-image:generateContent')
+                  assert kwargs['headers']['x-goog-api-key'] == 'validation-key'
+                  body = kwargs['json']
+                  assert body['generationConfig']['responseModalities'] == ['IMAGE']
+                  assert body['generationConfig']['responseFormat']['image']['aspectRatio'] == '16:9'
+                  return RealFakeResponse()
+
+          old_requests = mod.requests
+          mod.requests = RealFakeRequests()
+          mod.VIS.mkdir(parents=True, exist_ok=True)
+          generated = mod.gemini_ai_image('semiconductor factory', 'landscape', 0)
+          assert generated and (mod.VIS / generated).exists()
+          assert mod._is_image(mod.VIS / generated)
+          (mod.VIS / generated).unlink(missing_ok=True)
+          mod.requests = old_requests
+          print('Provider-path validation: PASS')
+          PY
