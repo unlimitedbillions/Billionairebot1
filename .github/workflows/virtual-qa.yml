@@ -1,0 +1,72 @@
+name: Virtual QA — BillionaireBot
+
+on:
+  push:
+    branches:
+      - qa/virtual-preflight-2026-10-01
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          pip install -r requirements.txt
+
+      - name: Python syntax
+        run: |
+          python -m compileall -q scripts
+          python -m py_compile scripts/asset_manager.py scripts/preflight.py
+
+      - name: JavaScript syntax
+        run: |
+          node --check scripts/verify-durations.mjs
+          node --check scripts/make-thumbnails.mjs
+
+      - name: Workflow YAML parse
+        run: |
+          ruby -e 'require "yaml"; YAML.load_file(".github/workflows/billionaire-stories.yml"); puts "workflow YAML parsed"'
+
+      - name: Production contract checks
+        run: |
+          grep -F 'VIDEO_PROVIDER_ORDER = ("pexels", "wikimedia", "archive")' scripts/asset_manager.py
+          grep -F 'GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip()' scripts/asset_manager.py
+          grep -F 'GEMINI_IMAGE_MODEL: gemini-2.5-flash-image' .github/workflows/billionaire-stories.yml
+          grep -F 'GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}' .github/workflows/billionaire-stories.yml
+          grep -F 'PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}' .github/workflows/billionaire-stories.yml
+          grep -F 'ZERO_NETWORK_ASSET_MISS' src/agentic/orchestrator/pipeline.ts
+          grep -F 'TTS_DURATION_RANGE_FAIL' src/agentic/orchestrator/pipeline.ts
+          grep -F '120, maxSec: 180' src/agentic/orchestrator/pipeline.ts
+          grep -F 'short: { min: 50, max: 60 }' scripts/verify-durations.mjs
+          grep -F 'long: { min: 120, max: 180 }' scripts/verify-durations.mjs
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: MCP docs freshness
+        run: npm run verify:mcp-doc
