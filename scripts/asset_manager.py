@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-asset_manager.py — PLAN + PREPARE phase (runs BEFORE rendering). 100% FREE / KEYLESS.
+asset_manager.py — PLAN + PREPARE phase (runs BEFORE rendering). Free/keyless-first, with an optional keyed AI-image fallback.
 
 Rules:
   * Every b-roll scene resolves to a validated MP4; real footage is preferred,
@@ -56,7 +56,7 @@ MAX_REUSE = 2        # one file serves at most 2 scenes
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi", ".mpeg", ".mpg", ".m2ts", ".mts", ".ts", ".ogv", ".3gp", ".flv", ".wmv", ".asf"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 DL_T = 20            # keep asset prep bounded; local/generated fallbacks handle misses
-AI_T = 40            # key-less AI image timeout
+AI_T = 40            # bounded keyed AI-image timeout
 WPS = 3.0
 HTTP_HEADERS = {"User-Agent": "BillionaireBot/1.0 (https://github.com/unlimitedbillions/Billionairebot1)"}
 
@@ -295,6 +295,78 @@ def loremflickr_image(query, slot):
     return [f"https://loremflickr.com/1280/720/{kw}?lock={slot + 1}"]
 
 
+def gemini_ai_image(query, orient, slot):
+    """Generate a non-person fallback still with Gemini Nano Banana.
+
+    This is deliberately after Pexels/Wikimedia/Openverse and is never used
+    for real-person/face queries. The generated still is materialized locally
+    before rendering, then b-roll callers convert it to MP4 motion.
+    """
+    if not GEMINI_KEY or is_face_query(query):
+        return None
+
+    aspect = "16:9" if orient == "landscape" else "9:16" if orient == "portrait" else "1:1"
+    prompt = (
+        f"Create an original cinematic documentary still illustrating: {query}. "
+        f"Use a realistic editorial photography style, {aspect} composition, "
+        "natural lighting, strong visual storytelling, no text, no logos, "
+        "no watermark, and no recognizable people or faces. Focus on objects, "
+        "places, technology, buildings, finance, industry, or abstract business "
+        "concepts that visually represent the subject."
+    )
+    dest = VIS / f"va-ai-{h('gemini|' + query + '|' + orient + '|' + str(slot))}.png"
+    payload = {
+        "contents": [{"parts": [{"text": prompt[:4000]}]}],
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+            "responseFormat": {"image": {"aspectRatio": aspect}},
+        },
+    }
+    url = f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_IMAGE_MODEL}:generateContent"
+    try:
+        r = requests.post(
+            url,
+            headers={
+                **HTTP_HEADERS,
+                "x-goog-api-key": GEMINI_KEY,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=AI_T,
+        )
+        if not r.ok:
+            log(f"  gemini image fallback returned HTTP {r.status_code} for {query!r}")
+            return None
+        data = r.json()
+        parts = (
+            ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts")
+            or []
+        )
+        image_data = next(
+            (
+                p.get("inlineData", {}).get("data")
+                or p.get("inline_data", {}).get("data")
+            )
+            for p in parts
+            if isinstance(p, dict) and (p.get("inlineData") or p.get("inline_data"))
+        )
+        if not image_data:
+            log(f"  gemini image fallback returned no image data for {query!r}")
+            return None
+        import base64
+        dest.write_bytes(base64.b64decode(image_data))
+        if not _is_image(dest) or dest.stat().st_size <= 5000:
+            dest.unlink(missing_ok=True)
+            log(f"  gemini image fallback produced invalid media for {query!r}")
+            return None
+        log(f"  gemini AI image ready: {dest.name} for {query!r}")
+        return dest.name
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        log(f"  gemini image fallback failed for {query!r}: {e}")
+        return None
+
+
 # ---------------- LOCAL GENERATORS (never fail) ------------------------------
 def bundled_image(query):
     if not FALLBACK.exists():
@@ -527,6 +599,8 @@ def _pick(cands, slot):
 def fetch_image(query, orient, slot):
     face = is_face_query(query)
 
+    # Real providers stay first. The newly supplied Pexels key is therefore
+    # actually exercised before any AI generation is attempted.
     for src, fn in (("pexels", lambda: pexels_images(query, orient)),
                     ("wikimedia", lambda: wikimedia_images(query)),
                     ("openverse", lambda: openverse_images(query))):
@@ -535,6 +609,14 @@ def fetch_image(query, orient, slot):
             r = _save(url, "va", "img", query, orient, slot, src)
             if r[0]:
                 return r
+
+    # AI image is a controlled fallback for non-person concepts only.
+    # fetch_video() calls this path before image->motion, so a generated still
+    # becomes a real local MP4 instead of a network dependency at render time.
+    if not face:
+        ai_name = gemini_ai_image(query, orient, slot)
+        if ai_name:
+            return ai_name, "gemini-ai"
 
     # Pollinations/LoremFlickr are intentionally not production-critical.
     # Recent production runs returned 402/401, so they must never consume the
@@ -717,7 +799,7 @@ def process_jobs(jobs):
 
 def main():
     log("provider policy: video network order = " + " -> ".join(VIDEO_PROVIDER_ORDER))
-    log("pexels video provider: " + ("READY (API key present)" if PEXELS_KEY else "SKIPPED (PEXELS_API_KEY missing)"))
+    log("pexels video provider: " + ("READY (API key present)" if PEXELS_KEY else "SKIPPED (PEXELS_API_KEY missing)"))\n    log("gemini AI-image fallback: " + ("READY (" + GEMINI_IMAGE_MODEL + ")" if GEMINI_KEY else "SKIPPED (GEMINI_API_KEY missing)"))
     if not SRC.exists():
         sys.exit("[assets] selected production jobs missing: input/scripts/render-jobs.json")
     jobs = json.loads(SRC.read_text())
