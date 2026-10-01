@@ -317,6 +317,7 @@ def gemini_ai_image(query, orient, slot):
         "places, technology, buildings, finance, industry, or abstract business "
         "concepts that visually represent the subject."
     )
+    VIS.mkdir(parents=True, exist_ok=True)
     dest = VIS / f"va-ai-{h('gemini|' + query + '|' + orient + '|' + str(slot))}.png"
     payload = {
         "contents": [{"parts": [{"text": prompt[:4000]}]}],
