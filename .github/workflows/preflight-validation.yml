@@ -42,10 +42,16 @@ jobs:
 
       - name: Workflow/code contract checks
         run: |
-          grep -F 'https://api.pexels.com/v1/videos/search' scripts/asset_manager.py
-          grep -F 'CI_ZERO_NETWORK: "1"' .github/workflows/billionaire-stories.yml
-          grep -F 'GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}' .github/workflows/billionaire-stories.yml
-          grep -F 'VIDEO_PROVIDER_ORDER = ("pexels", "wikimedia", "archive")' scripts/asset_manager.py
+          python - <<'PY'
+          from pathlib import Path
+          asset = Path('scripts/asset_manager.py').read_text()
+          wf = Path('.github/workflows/billionaire-stories.yml').read_text()
+          assert 'https://api.pexels.com/v1/videos/search' in asset
+          assert 'CI_ZERO_NETWORK: "1"' in wf
+          assert 'GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}' in wf
+          assert 'VIDEO_PROVIDER_ORDER = ("pexels", "wikimedia", "archive")' in asset
+          print('Workflow/code contracts: PASS')
+          PY
 
       - name: TypeScript typecheck
         run: npm run typecheck
