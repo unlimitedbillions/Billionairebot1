@@ -110,6 +110,7 @@ jobs:
 
       - name: Render shorts + longform (Local Assets + Prepared Audio)
         env:
+          CI_ZERO_NETWORK: "1"
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AGENTIC_VOICE_FALLBACK: "1"
