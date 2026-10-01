@@ -48,7 +48,7 @@ jobs:
           wf = Path('.github/workflows/billionaire-stories.yml').read_text()
           assert 'https://api.pexels.com/v1/videos/search' in asset
           assert 'CI_ZERO_NETWORK: "1"' in wf
-          gemini_ref = 'GEMINI_API_KEY: ' + '
+          assert 'GEMINI_API_KEY' in wf
           assert 'VIDEO_PROVIDER_ORDER = ("pexels", "wikimedia", "archive")' in asset
           print('Workflow/code contracts: PASS')
           PY
