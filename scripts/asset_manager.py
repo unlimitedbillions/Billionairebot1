@@ -145,7 +145,7 @@ def pexels_videos(query, orient):
     if not PEXELS_KEY:
         return []
     query = provider_query(query)
-    d = get("https://api.pexels.com/videos/search",
+    d = get("https://api.pexels.com/v1/videos/search",
             {"query": query, "orientation": orient, "per_page": 10},
             {"Authorization": PEXELS_KEY})
     out = []
