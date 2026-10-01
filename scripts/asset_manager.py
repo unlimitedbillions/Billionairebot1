@@ -11,13 +11,14 @@ Rules:
   * Chain:
         exact local cache/reuse -> Pexels (first network video provider)
         -> Wikimedia -> Internet Archive (video fallbacks)
-        -> relevant image -> motion conversion -> semantic reuse (last resort)
-        Image scenes use Pexels -> Wikimedia -> Openverse -> local fallback.
+        -> relevant stock image -> Gemini AI image -> motion conversion
+        -> semantic reuse (last resort).
+        Image scenes use Pexels -> Wikimedia -> Openverse -> Gemini AI -> local fallback.
         Pollinations/LoremFlickr are not production-critical providers.
   * Semantic asset reuse is a LAST-RESORT fallback only, after real video and
     relevant image->motion fallbacks fail; unrelated assets are never reused.
   * Face safety: queries that look like a real person NEVER go to AI or random
-    photo services; they resolve from Wikimedia only, else bundled silhouette,
+    photo services; they resolve from Wikimedia/stock only, else bundled fallback,
     else gradient card.
   * Manual Qwen hero shots: drop a file in input/visuals/ and reference it as
     [Visual: filename.jpg] in the script — bound locally, zero network.
@@ -44,6 +45,8 @@ MANIFEST = CACHE / "assets.json"
 FALLBACK = ROOT / "assets" / "fallback"
 
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "").strip()
+GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image").strip()
 API_T = 10           # provider API timeout
 RETRY = 2             # bounded provider retries
 
@@ -799,7 +802,8 @@ def process_jobs(jobs):
 
 def main():
     log("provider policy: video network order = " + " -> ".join(VIDEO_PROVIDER_ORDER))
-    log("pexels video provider: " + ("READY (API key present)" if PEXELS_KEY else "SKIPPED (PEXELS_API_KEY missing)"))\n    log("gemini AI-image fallback: " + ("READY (" + GEMINI_IMAGE_MODEL + ")" if GEMINI_KEY else "SKIPPED (GEMINI_API_KEY missing)"))
+    log("pexels video provider: " + ("READY (API key present)" if PEXELS_KEY else "SKIPPED (PEXELS_API_KEY missing)"))
+    log("gemini AI-image fallback: " + ("READY (" + GEMINI_IMAGE_MODEL + ")" if GEMINI_KEY else "SKIPPED (GEMINI_API_KEY missing)"))
     if not SRC.exists():
         sys.exit("[assets] selected production jobs missing: input/scripts/render-jobs.json")
     jobs = json.loads(SRC.read_text())
@@ -825,7 +829,8 @@ def main():
                    "motion_fallback_seconds": MOTION_SECONDS,
                    "visual_segment_schema": "{asset_video,duration,scene_id,source}",
                    "chain": ["exact-cache/reuse", "pexels", "wikimedia", "archive",
-                             "relevant-image->motion", "semantic-video-reuse"]},
+                             "relevant-image", "gemini-ai-image", "image->motion",
+                             "semantic-video-reuse"]},
         "episodes": episodes}, indent=2))
     OUT_JOBS.write_text(json.dumps(rewritten, indent=2))
 
