@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - qa/virtual-preflight-2026-10-01
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
