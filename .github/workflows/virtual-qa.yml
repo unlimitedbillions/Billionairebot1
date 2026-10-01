@@ -55,7 +55,7 @@ jobs:
           grep -F 'PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}' .github/workflows/billionaire-stories.yml
           grep -F 'ZERO_NETWORK_ASSET_MISS' src/agentic/orchestrator/pipeline.ts
           grep -F 'TTS_DURATION_RANGE_FAIL' src/agentic/orchestrator/pipeline.ts
-          grep -F '120, maxSec: 180' src/agentic/orchestrator/pipeline.ts
+          grep -F 'minSec: 120' src/agentic/orchestrator/pipeline.ts && grep -F 'maxSec: 180' src/agentic/orchestrator/pipeline.ts
           grep -F 'short: { min: 50, max: 60 }' scripts/verify-durations.mjs
           grep -F 'long: { min: 120, max: 180 }' scripts/verify-durations.mjs
 
