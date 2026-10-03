@@ -151,10 +151,10 @@ export async function runAgenticPipeline(
             : req.voice;
 
     // Production duration policy is format-driven and TTS-measured.
-    // Shorts: 50-60s. Long-form: 120-180s.
-    // IMPORTANT: do not pre-pad or pre-expand to a fixed word count. The first
-    // real TTS pass establishes the speaker's actual words-per-second, then the
-    // correction loop calculates the required word count from that measurement.
+    // Shorts: 50-60s. Long-form: 780-800 spoken words and >=120s actual TTS,
+    // with no maximum duration.
+    // IMPORTANT: real TTS is measured after the final 780-800-word narration;
+    // duration is a minimum gate, not a target/max clamp for long-form.
     const isLongForm = req.platform === 'youtube' && (req.maxRuntimeSec ?? 0) >= 120;
     const durationSpec = isLongForm
         ? { minSec: 120, targetSec: 120, maxSec: Number.POSITIVE_INFINITY, label: 'long', minWords: 780, maxWords: 800 }
@@ -699,14 +699,15 @@ export async function runAgenticPipeline(
         });
     }
 
-    // MEASURE -> CALCULATE WORD COUNT -> REGENERATE -> MEASURE AGAIN.
-    // The first TTS pass is the calibration pass. This prevents the old fixed
-    // 780-800 word assumption from turning a ~102s narration into ~180s.
+    // Final long-form contract: 780-800 spoken words, then measure the actual
+    // generated TTS. The only runtime gate for long-form is >=120 seconds.
     const durationReport = {
         format: durationSpec?.label ?? 'unbounded',
         minimumSec: durationSpec?.minSec ?? 0,
         targetSec: durationSpec?.targetSec ?? 0,
-        maximumSec: durationSpec?.maxSec ?? 0,
+        maximumSec: Number.isFinite(durationSpec?.maxSec ?? Number.POSITIVE_INFINITY)
+            ? (durationSpec?.maxSec ?? 0)
+            : null,
         attempts: [] as { attempt: number; measuredSec: number; currentWords: number; requiredWords: number }[],
         passedBeforeVisualAcquisition: !durationSpec,
         finalMeasuredSec: 0,
@@ -1011,7 +1012,9 @@ export async function runAgenticPipeline(
         ...(gatePlatform ? { platform: gatePlatform } : {}),
         ...(durationSpec ? {
             minRuntimeSec: durationSpec.minSec,
-            maxRuntimeSec: durationSpec.maxSec,
+            ...(Number.isFinite(durationSpec.maxSec)
+                ? { maxRuntimeSec: durationSpec.maxSec }
+                : {}),
         } : (req.maxRuntimeSec ? { maxRuntimeSec: req.maxRuntimeSec } : {})),
     });
     emit({ stage: 'gate', percent: 100, message: gate.pass ? 'GATE PASS' : 'GATE FAIL' });
