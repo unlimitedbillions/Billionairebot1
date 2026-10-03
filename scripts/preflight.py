@@ -20,7 +20,7 @@ JOBS = ROOT / "input" / "scripts" / "render-jobs.json"
 SRC = ROOT / "input" / "scripts" / "billionaire-stories.json"
 MANIFEST = ROOT / "cache" / "assets.json"
 W = 34
-VISUAL_MARKER_RE = re.compile(r"\[Visual:\s*[^\]]+?\s*\]")
+VISUAL_MARKER_RE = re.compile(r"\[Visual:\s*(?P<val>[^\]]+?)\s*\]")
 
 
 def words(script):
