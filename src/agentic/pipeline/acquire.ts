@@ -836,32 +836,89 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
     }
 
     const MAX_CONCURRENT_DOWNLOADS = 4;
-    // Soft deadline (default 90s, env-tunable, 0 disables): stop WAITING for
-    // stragglers and flush whatever candidates have already materialised.
-    // Previously the only bound was the pipeline's outer hard timebox, which
-    // ABANDONED the whole acquireAssets promise on expiry — discarding every
-    // fully-downloaded candidate (observed: 3 videos landed at t=113s, timebox
-    // fired at 120s, pipeline received [] and fell back to offline placeholders).
+    // IMPORTANT: acquisition is a PREPARE-stage barrier. Render runs with
+    // CI_ZERO_NETWORK=1, so returning while downloads are still in flight
+    // creates a race where PREFLIGHT/render sees missing local assets.
+    //
+    // The old 90s soft deadline was unsafe: it resolved acquireAssets() while
+    // mapWithConcurrencyLimit() continued in the background. That made the
+    // manifest incomplete even though downloads later finished on disk.
+    //
+    // Keep the env value only as an informational warning threshold. NEVER
+    // resolve early; all materialisation tasks must settle before this function
+    // returns.
     const softDeadlineMs = Number(process.env.ACQUIRE_SOFT_DEADLINE_MS ?? 90000);
+    const downloadStartedAt = Date.now();
+    let softDeadlineWarned = false;
+    const allDownloads = mapWithConcurrencyLimit(downloadTasks, MAX_CONCURRENT_DOWNLOADS);
     if (softDeadlineMs > 0) {
-        await new Promise<void>((resolve) => {
-            let settled = false;
-            const finish = () => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timer);
-                resolve();
-            };
-            const timer = setTimeout(() => {
-                console.warn(
-                    `⚠ acquire soft deadline (${softDeadlineMs}ms) — flushing ${candidates.length} candidate(s) fetched so far`,
-                );
-                finish();
-            }, softDeadlineMs);
-            mapWithConcurrencyLimit(downloadTasks, MAX_CONCURRENT_DOWNLOADS).then(finish, finish);
-        });
+        const warningTimer = setTimeout(() => {
+            softDeadlineWarned = true;
+            console.warn(
+                `⚠ acquire warning threshold (${softDeadlineMs}ms) reached — WAITING for all ${downloadTasks.length} materialisation task(s) to settle; no early flush`,
+            );
+        }, softDeadlineMs);
+        try {
+            await allDownloads;
+        } finally {
+            clearTimeout(warningTimer);
+        }
     } else {
-        await mapWithConcurrencyLimit(downloadTasks, MAX_CONCURRENT_DOWNLOADS);
+        await allDownloads;
+    }
+    if (softDeadlineWarned) {
+        console.log(
+            `[ACQUIRE] full download barrier completed in ${Date.now() - downloadStartedAt}ms; all tasks settled before render`,
+        );
+    }
+
+    // Final scene coverage barrier. Every image scene MUST have at least one
+    // local prepared candidate before PREFLIGHT. Video scenes remain strict:
+    // fabricated gradient video is never substituted for documentary footage.
+    const coveredSceneIndexes = new Set(
+        candidates
+            .filter((c) => c.kind === 'image' || c.kind === 'video')
+            .map((c) => c.sceneIndex),
+    );
+    for (let i = 0; i < plan.scenes.length; i++) {
+        const scene = plan.scenes[i];
+        const expectedKind =
+            scene.visualPreference === 'video' ||
+            scene.visualPreference === 'video-gen' ||
+            scene.visualPreference === 'video-gen-local'
+                ? 'video'
+                : 'image';
+        if (coveredSceneIndexes.has(i)) continue;
+
+        if (expectedKind === 'image') {
+            const dir = sceneImageDir(ws, i);
+            const fb = generateFallbackVisual(scene, 'image', dir, 0);
+            if (fb) {
+                candidates.push({
+                    kind: 'image',
+                    sceneIndex: i,
+                    candidateIndex: 1,
+                    localPath: fb.localPath,
+                    url: fb.url,
+                    source: fb.source,
+                    license: fb.license,
+                    licenseUrl: fb.licenseUrl,
+                    keywords: scene.searchKeywords,
+                });
+                coveredSceneIndexes.add(i);
+                console.warn(
+                    `⚠ scene ${i}: no downloaded image survived acquisition; installed offline fallback before PREFLIGHT`,
+                );
+            } else {
+                console.error(
+                    `❌ scene ${i}: no prepared image and offline fallback generation failed`,
+                );
+            }
+        } else {
+            console.warn(
+                `⚠ scene ${i}: no prepared real video; leaving unresolved so PREFLIGHT/render fails honestly`,
+            );
+        }
     }
 
     // Sort to keep deterministic scene and candidate order in manifest / output
