@@ -18,7 +18,7 @@ export interface GateReport {
 }
 
 export interface GateOptions {
-    /** Platform whose runtime cap applies (X5). Default Shorts=180s. */
+    /** Platform whose runtime cap applies (X5). Long-form YouTube has no maximum runtime. */
     platform?: 'shorts' | 'tiktok' | 'reels' | 'youtube';
     /** Explicit override for X5 runtime cap (seconds). */
     maxRuntimeSec?: number;
@@ -26,7 +26,7 @@ export interface GateOptions {
     minRuntimeSec?: number;
 }
 
-const RUNTIME_CAPS: Record<string, number> = { shorts: 60, tiktok: 180, reels: 90, youtube: 600 };
+const RUNTIME_CAPS: Record<string, number> = { shorts: 60, tiktok: 180, reels: 90, youtube: Number.POSITIVE_INFINITY };
 
 export function runFinalGate(
     plan: Plan,
@@ -83,17 +83,20 @@ export function runFinalGate(
     }
     checks.push({ id: 'X1', label: 'Duration alignment', pass: durAligned, detail: durDetail });
 
-    // X5: total runtime within the platform cap.
+    // X5: total runtime within the platform policy. Long-form YouTube has a
+    // minimum-only runtime contract; it must never inherit a hidden 600s cap.
     const cap = opts.maxRuntimeSec ?? RUNTIME_CAPS[opts.platform ?? 'shorts'] ?? 180;
     const floor = opts.minRuntimeSec ?? 0;
-    const runtimeOk = planned >= floor && planned <= cap;
+    const runtimeOk = planned >= floor && (Number.isFinite(cap) ? planned <= cap : true);
     checks.push({
         id: 'X5',
         label: 'Runtime within format range',
         pass: runtimeOk,
         detail: floor > 0
             ? `${planned.toFixed(1)}s within ${floor}-${cap}s${opts.platform ? ` (${opts.platform})` : ''}`
-            : `${planned.toFixed(1)}s <= ${cap}s${opts.platform ? ` (${opts.platform})` : ''}`,
+            : (Number.isFinite(cap)
+                ? `${planned.toFixed(1)}s <= ${cap}s${opts.platform ? ` (${opts.platform})` : ''}`
+                : `${planned.toFixed(1)}s minimum-only${opts.platform ? ` (${opts.platform})` : ''}`),
     });
 
     // X6: attribution completeness — every approved asset must carry a license
