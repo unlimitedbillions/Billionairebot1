@@ -47,10 +47,10 @@ jobs:
           ffmpeg -hide_banner -filters 2>/dev/null | grep -F 'drawtext' >/dev/null
 
       - name: Install Node dependencies
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: pip install --disable-pip-version-check -r requirements.txt
 
       - name: Restore asset pool cache
         uses: actions/cache@v4
@@ -115,9 +115,6 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AGENTIC_VOICE_FALLBACK: "1"
           AUTO_FREE_MUSIC: "true"
-          # Visuals are acquired here, before render, so the final narration-first
-          # scene plan gets fresh local assets. Render itself consumes only the
-          # materialized local candidates; CI_ZERO_NETWORK must NOT cover acquisition.
         run: npm run agentic:batch -- --file input/scripts/render-jobs.json
 
       - name: Duration gate
@@ -153,15 +150,11 @@ jobs:
         run: |
           git config user.name "billionaire-bot"
           git config user.email "bot@users.noreply.github.com"
-
-          # History files are runtime-generated; only stage files that actually exist.
-          # This avoids noisy "pathspec ... did not match any files" messages on first runs.
           for f in data/published.json data/yt_uploads.json data/meta_uploads.json; do
             if [ -f "$f" ]; then
               git add "$f"
             fi
           done
-
           if ! git diff --cached --quiet; then
             git commit -m "chore: update logs [skip ci]"
             git push
