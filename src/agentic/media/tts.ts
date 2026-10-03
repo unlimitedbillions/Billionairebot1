@@ -27,6 +27,10 @@ const { execFileSync } = require('child_process');
 // every scene silently degraded to a sine-tone placeholder. 120s covers a
 // 7-scene SAPI batch; override with AVS_VOICE_GROUP_TIMEOUT_MS if needed.
 const VOICE_GROUP_TIMEOUT_MS = Number(process.env.AVS_VOICE_GROUP_TIMEOUT_MS ?? 120_000);
+// Long-form YouTube jobs are 780–800 spoken words and may contain many scenes.
+// Never let the short-form 120s batch budget abort an otherwise valid long TTS run.
+const LONG_FORM_GROUP_TIMEOUT_MS = Number(process.env.AVS_LONG_VOICE_GROUP_TIMEOUT_MS ?? 600_000);
+const LONG_FORM_SCENE_TIMEOUT_MS = Number(process.env.AVS_LONG_VOICE_SCENE_TIMEOUT_MS ?? 120_000);
 // Real speech WAVs (44KB/s @22kHz mono) / MP3s are always > 16KB; the silent
 // fallback (anullsrc) and broken files are far smaller. Used to distinguish
 // genuine speech salvage candidates from junk.
@@ -218,6 +222,15 @@ export async function generateAgenticVoiceovers(
         }
 
         const errors: string[] = [];
+        const totalSpokenWords = plan.scenes
+            .map((s) => (s.voiceoverText ?? '').replace(/\[[^\]]*\]/g, ' '))
+            .join(' ')
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean).length;
+        const isLongForm = totalSpokenWords >= 700 || plan.scenes.length >= 15;
+        const groupTimeoutMs = isLongForm ? LONG_FORM_GROUP_TIMEOUT_MS : VOICE_GROUP_TIMEOUT_MS;
+        if (isLongForm) console.log('[TTS] Long-form mode: ' + totalSpokenWords + ' spoken words, ' + plan.scenes.length + ' scenes; group timeout=' + Math.round(groupTimeoutMs / 1000) + 's');
         for (const [v, scenes] of voiceGroups) {
             const engineScenes = scenes.map((s) => ({
                 sceneNumber: s.sceneNumber,
@@ -231,8 +244,8 @@ export async function generateAgenticVoiceovers(
             try {
                 const map = await withTimeout(
                     generateVoiceovers(engineScenes as any, audioDir, { voice: v } as any),
-                    VOICE_GROUP_TIMEOUT_MS,
-                    `voice generation timed out for "${v}"`,
+                    groupTimeoutMs,
+                    `voice generation timed out for "${v}" after ${Math.round(groupTimeoutMs / 1000)}s`,
                 );
                 for (const [k, val] of map) allResults.set(k, val);
             } catch (e: any) {
@@ -244,6 +257,29 @@ export async function generateAgenticVoiceovers(
                 // degrades to a sine-tone placeholder even though speech exists,
                 // silently producing a video with NO spoken voiceover.
                 for (const [sn, entry] of salvageVoiceFiles(audioDir, scenes)) allResults.set(sn, entry);
+
+                // Long-form recovery: retry ONLY scenes that still have no real speech.
+                if (isLongForm) {
+                    for (const s of scenes) {
+                        if (allResults.has(s.sceneNumber)) continue;
+                        const oneScene = [{
+                            sceneNumber: s.sceneNumber,
+                            voiceoverText: s.voiceoverText,
+                            duration: s.durationSec,
+                            voiceConfig: (s as any).voiceConfig,
+                        }];
+                        try {
+                            const one = await withTimeout(
+                                generateVoiceovers(oneScene as any, audioDir, { voice: v } as any),
+                                LONG_FORM_SCENE_TIMEOUT_MS,
+                                `scene ${s.sceneNumber} TTS timed out for "${v}" after ${Math.round(LONG_FORM_SCENE_TIMEOUT_MS / 1000)}s`,
+                            );
+                            for (const [sn, entry] of one) allResults.set(sn, entry);
+                        } catch (retryError: any) {
+                            console.warn('[TTS] Long-form scene retry failed: scene=' + s.sceneNumber + ' voice=' + v + ' error=' + (retryError?.message ?? retryError));
+                        }
+                    }
+                }
             }
         }
 
@@ -267,6 +303,9 @@ export async function generateAgenticVoiceovers(
         if (ok === plan.scenes.length) {
             const sidecars = writeCaptionSidecars(audioDir, toCaptionScenes(plan, scenes), { baseName: 'subtitles' });
             return { scenes, voiceoverDriven: true, sidecars, fallbackUsed: false };
+        }
+        if (isLongForm) {
+            throw new Error(`Long-form TTS incomplete: real speech available for ${ok}/${plan.scenes.length} scenes after group + per-scene recovery`);
         }
         return fillMissing(plan, scenes, audioDir, /*driven*/ ok > 0);
     } catch (e: any) {
