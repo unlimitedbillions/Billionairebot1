@@ -557,7 +557,14 @@ def media_duration(path):
 
 
 def download(url, dest):
-    """Download, validate and retry media from Wikimedia/Archive/Pexels."""
+    """Download, validate and retry provider media with bounded, HTTPS-only I/O."""
+    if not isinstance(url, str) or not url.lower().startswith("https://"):
+        log(f"download rejected non-HTTPS URL: {url!r}")
+        return False
+
+    # Keep provider responses bounded so a bad/malicious URL cannot fill the
+    # runner disk before ffprobe gets a chance to reject it.
+    max_bytes = 15_000_000 if dest.suffix in IMAGE_EXTENSIONS else 150_000_000
     attempts = 3
     for attempt in range(1, attempts + 1):
         tmp = dest.with_suffix(dest.suffix + ".part")
@@ -570,13 +577,23 @@ def download(url, dest):
                 allow_redirects=True,
             ) as r:
                 r.raise_for_status()
+                if not r.url.lower().startswith("https://"):
+                    raise ValueError("provider redirected to a non-HTTPS URL")
                 ctype = str(r.headers.get("Content-Type") or "").lower()
                 if "text/html" in ctype or "application/json" in ctype:
                     raise ValueError(f"provider returned a non-media response: {ctype}")
+                declared = int(r.headers.get("Content-Length") or 0)
+                if declared > max_bytes:
+                    raise ValueError(f"provider response exceeds {max_bytes} byte limit")
+                written = 0
                 with open(tmp, "wb") as f:
                     for chunk in r.iter_content(1 << 16):
-                        if chunk:
-                            f.write(chunk)
+                        if not chunk:
+                            continue
+                        written += len(chunk)
+                        if written > max_bytes:
+                            raise ValueError(f"download exceeded {max_bytes} byte limit")
+                        f.write(chunk)
                 if dest.suffix in IMAGE_EXTENSIONS and not _is_image(tmp):
                     raise ValueError("downloaded image failed ffprobe validation")
                 if dest.suffix in VIDEO_EXTENSIONS and not _is_video(tmp):
@@ -587,7 +604,7 @@ def download(url, dest):
                 return True
         except Exception as e:
             tmp.unlink(missing_ok=True)
-            log(f"download failed attempt {attempt}/{attempts} {url}: {e}")
+            log(f"download failed attempt {attempt}/{attempts}: {e}")
             if attempt < attempts:
                 time.sleep(0.8 * attempt)
     return False
@@ -780,11 +797,20 @@ def process_jobs(jobs):
                 val = m.group("val")
                 n = len(scenes) + 1
                 if not val.startswith(("wikimedia:", "pexels:")) and "." in val and " " not in val:
+                    local_name = Path(val).name
+                    safe_suffix = Path(local_name).suffix.lower()
+                    if local_name != val or safe_suffix not in (VIDEO_EXTENSIONS | IMAGE_EXTENSIONS):
+                        log(f"  rejected unsafe local visual tag: {val!r}")
+                        return m.group(0)
+                    local_path = VIS / local_name
+                    if not local_path.is_file():
+                        log(f"  local visual missing: {local_name!r}")
+                        return m.group(0)
                     scenes.append({"id": f"scene-{n:03d}",
                                    "duration": round(scene_words(line) / WPS, 1),
-                                   "type": "local", "asset": f"input/visuals/{val}",
-                                   "asset_video": None, "source": "local", "query": val})
-                    return m.group(0)
+                                   "type": "local", "asset": f"input/visuals/{local_name}",
+                                   "asset_video": None, "source": "local", "query": local_name})
+                    return f"[Visual: {local_name}]"
                 fname, src, kind = assign(val, orient, episode_used_assets)
                 if fname:
                     episode_used_assets.add(fname)
