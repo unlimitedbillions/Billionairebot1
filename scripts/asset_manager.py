@@ -317,13 +317,13 @@ def gemini_ai_image(query, orient, slot):
         "represent the subject."
     )
     VIS.mkdir(parents=True, exist_ok=True)
-    dest = VIS / f"va-ai-{h('gemini|' + query + '|' + orient + '|' + str(slot))}.png"
+    dest = VIS / f"va-ai-{h('gemini|' + query + '|' + orient + '|' + str(slot))}.jpg"
     payload = {
         "model": GEMINI_IMAGE_MODEL,
         "input": prompt[:4000],
         "response_format": {
             "type": "image",
-            "mime_type": "image/png",
+            "mime_type": "image/jpeg",
             "aspect_ratio": aspect,
             "image_size": "1K",
         },
