@@ -95,7 +95,7 @@ jobs:
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_IMAGE_MODEL: gemini-2.5-flash-image
+          GEMINI_IMAGE_MODEL: gemini-3.1-flash-image
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           PRODUCTION_PERSON: ${{ steps.person.outputs.person }}
         run: python scripts/asset_manager.py
