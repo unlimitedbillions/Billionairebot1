@@ -157,7 +157,7 @@ export async function runAgenticPipeline(
     // correction loop calculates the required word count from that measurement.
     const isLongForm = req.platform === 'youtube' && (req.maxRuntimeSec ?? 0) >= 120;
     const durationSpec = isLongForm
-        ? { minSec: 120, targetSec: 150, maxSec: 180, label: 'long' }
+        ? { minSec: 120, targetSec: 120, maxSec: Number.POSITIVE_INFINITY, label: 'long', minWords: 780, maxWords: 800 }
         : req.platform === 'shorts'
           ? { minSec: 50, targetSec: 55, maxSec: 60, label: 'short' }
           : null;
@@ -732,85 +732,44 @@ export async function runAgenticPipeline(
             );
         }
         if (!hasRealTts()) {
-            throw new Error('REAL_TTS_DURATION_FAIL: complete real speech is required before duration calibration');
+            throw new Error('REAL_TTS_DURATION_FAIL: complete real speech is required before duration validation');
         }
 
-        let measuredSec = measureNarration();
-        let attempt = 1;
-        const MAX_DURATION_CORRECTIONS = 4;
-        let passed = measuredSec >= durationSpec.minSec && measuredSec <= durationSpec.maxSec;
+        const MIN_LONG_WORDS = durationSpec.minWords ?? 1;
+        const MAX_LONG_WORDS = durationSpec.maxWords ?? Number.POSITIVE_INFINITY;
+        let narration = plan.scenes.map((s) => s.voiceoverText).join(' ').replace(/\s+/g, ' ').trim();
+        let currentWords = countSpokenWords(narration);
 
-        while (!passed && attempt <= MAX_DURATION_CORRECTIONS) {
-            const narration = plan.scenes.map((s) => s.voiceoverText).join(' ').replace(/\s+/g, ' ').trim();
-            const currentWords = countSpokenWords(narration);
-            if (currentWords < 1 || measuredSec <= 0) {
-                throw new Error('DURATION_WORD_CALC_FAIL: cannot calculate required word count from measured TTS');
-            }
-
-            // This is the requested calibration formula:
-            // required words = current spoken words × target duration / actual TTS duration.
-            const rawRequiredWords = Math.round(currentWords * durationSpec.targetSec / measuredSec);
-            const minWords = Math.max(1, Math.floor(currentWords * durationSpec.minSec / measuredSec * 0.97));
-            const maxWords = Math.max(minWords, Math.ceil(currentWords * durationSpec.maxSec / measuredSec * 1.03));
-            const requiredWords = Math.min(maxWords, Math.max(minWords, rawRequiredWords));
-
-            durationReport.attempts.push({
-                attempt,
-                measuredSec,
-                currentWords,
-                requiredWords,
-            });
-
-            logInfo(
-                'TTS_DURATION_CALIBRATION format=' + durationSpec.label +
-                ' attempt=' + attempt +
-                ' measured=' + measuredSec.toFixed(1) + 's' +
-                ' currentWords=' + currentWords +
-                ' requiredWords=' + requiredWords +
-                ' target=' + durationSpec.targetSec + 's' +
-                ' range=' + durationSpec.minSec + '-' + durationSpec.maxSec + 's',
+        // Long-form content contract: keep the generated narration at 780-800
+        // spoken words. Runtime is validated separately from actual TTS.
+        if (durationSpec.label === 'long' && (currentWords < MIN_LONG_WORDS || currentWords > MAX_LONG_WORDS)) {
+            const targetWords = Math.min(
+                MAX_LONG_WORDS,
+                Math.max(MIN_LONG_WORDS, Math.round((MIN_LONG_WORDS + MAX_LONG_WORDS) / 2)),
             );
-
-            const lowerWords = Math.max(1, Math.floor(requiredWords * 0.97));
-            const upperWords = Math.ceil(requiredWords * 1.03);
-            const direction = measuredSec < durationSpec.minSec ? 'expand' : 'tighten';
-            const instruction = direction === 'expand'
-                ? 'Expand the narration naturally.'
-                : 'Tighten the narration naturally without removing important facts.';
             const rewrite = await bridge.completeJSON<{ script: string }>(
-                'Rewrite this billionaire story as natural spoken narration. ' + instruction +
-                ' Preserve names, chronology and existing factual claims. Do not invent facts. ' +
+                'Rewrite this billionaire story as natural spoken narration. Preserve names, chronology and existing factual claims. Do not invent facts. ' +
                 'Return one continuous narration with no headings, visual tags, hashtags or meta commentary. ' +
-                'Target exactly about ' + requiredWords + ' spoken words, accepting ' + lowerWords + '-' + upperWords +
-                ' words. The target was calculated from an actual TTS measurement, so stay close to it.',
+                'Target 780-800 spoken words, and keep the result inside that range.',
                 JSON.stringify({
                     title: req.title,
                     topic: req.topic,
                     currentNarration: narration,
-                    actualTtsSeconds: measuredSec,
-                    targetSeconds: durationSpec.targetSec,
-                    minimumSeconds: durationSpec.minSec,
-                    maximumSeconds: durationSpec.maxSec,
                     currentWords,
-                    requiredWords,
-                    acceptedWordRange: [lowerWords, upperWords],
+                    targetWords,
+                    acceptedWordRange: [MIN_LONG_WORDS, MAX_LONG_WORDS],
                 }),
                 '{"script":"..."}',
             );
-
             const candidate = typeof rewrite?.script === 'string'
                 ? rewrite.script.replace(/\s+/g, ' ').trim()
                 : '';
-
             const candidateWords = candidate ? countSpokenWords(candidate) : 0;
-            if (!candidate || candidateWords < lowerWords || candidateWords > upperWords) {
-                logWarn(
-                    '⚠ duration correction returned ' + candidateWords +
-                    ' words; expected ' + lowerWords + '-' + upperWords +
-                    '. Retrying with the measured word target.',
+            if (!candidate || candidateWords < MIN_LONG_WORDS || candidateWords > MAX_LONG_WORDS) {
+                throw new Error(
+                    'LONG_FORM_WORDCOUNT_FAIL: generated narration must contain ' +
+                    MIN_LONG_WORDS + '-' + MAX_LONG_WORDS + ' spoken words; received ' + candidateWords,
                 );
-                attempt++;
-                continue;
             }
 
             const correctedPlan = await buildPlan(
@@ -839,29 +798,22 @@ export async function runAgenticPipeline(
             });
 
             const parsedWords = countSpokenWords(correctedPlan.scenes.map((s) => s.voiceoverText).join(' '));
-            if (parsedWords < lowerWords || parsedWords > upperWords) {
-                logWarn(
-                    '⚠ duration correction rejected after parsing: ' + parsedWords +
-                    ' spoken words; expected ' + lowerWords + '-' + upperWords,
+            if (parsedWords < MIN_LONG_WORDS || parsedWords > MAX_LONG_WORDS) {
+                throw new Error(
+                    'LONG_FORM_WORDCOUNT_FAIL: parsed narration must contain ' +
+                    MIN_LONG_WORDS + '-' + MAX_LONG_WORDS + ' spoken words; received ' + parsedWords,
                 );
-                attempt++;
-                continue;
             }
-
             plan.scenes = correctedPlan.scenes;
             plan.totalDurationSec = correctedPlan.totalDurationSec;
             plan.musicQuery = correctedPlan.musicQuery;
 
-            let retryVoices: any;
             try {
                 const { runVoiceStage } = await import('../media/voice-controller.js');
-                retryVoices = await runVoiceStage(
-                    plan,
-                    voiceWorkspace,
-                    req.voice,
-                    (percent, message) => emit({ stage: 'voiceover', percent, message: 'duration-calibration: ' + message }),
-                    req.useClonedVoiceId,
-                    req.personas,
+                const retryVoices = await runVoiceStage(
+                    plan, voiceWorkspace, req.voice,
+                    (percent, message) => emit({ stage: 'voiceover', percent, message: 'wordcount-correction: ' + message }),
+                    req.useClonedVoiceId, req.personas,
                 );
                 voiceovers = {
                     scenes: retryVoices.voices.map((v: any) => ({
@@ -879,7 +831,6 @@ export async function runAgenticPipeline(
                     plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0],
                 );
             }
-
             if (!hasRealTts()) {
                 voiceovers = await generateAgenticVoiceovers(
                     plan, voiceWorkspace, req.voice, undefined, req.personalAudio?.[0],
@@ -889,28 +840,42 @@ export async function runAgenticPipeline(
                 throw new Error('REAL_TTS_DURATION_FAIL: corrected narration did not produce complete real speech');
             }
 
-            measuredSec = measureNarration();
-            attempt++;
-            passed = measuredSec >= durationSpec.minSec && measuredSec <= durationSpec.maxSec;
+            narration = plan.scenes.map((s) => s.voiceoverText).join(' ').replace(/\s+/g, ' ').trim();
+            currentWords = countSpokenWords(narration);
         }
 
-        durationReport.passedBeforeVisualAcquisition = passed;
+        const measuredSec = measureNarration();
+        const finalWords = countSpokenWords(plan.scenes.map((s) => s.voiceoverText).join(' '));
+        if (durationSpec.label === 'long' && (finalWords < MIN_LONG_WORDS || finalWords > MAX_LONG_WORDS)) {
+            throw new Error(
+                'LONG_FORM_WORDCOUNT_FAIL: final narration contains ' + finalWords +
+                ' spoken words; required ' + MIN_LONG_WORDS + '-' + MAX_LONG_WORDS,
+            );
+        }
+
+        durationReport.attempts.push({
+            attempt: 1,
+            measuredSec,
+            currentWords: finalWords,
+            requiredWords: finalWords,
+        });
+        durationReport.passedBeforeVisualAcquisition = measuredSec >= durationSpec.minSec;
         durationReport.finalMeasuredSec = measuredSec;
+
         writeJson(voiceWorkspace, 'duration-calibration.json', durationReport);
 
-        if (!passed) {
+        if (measuredSec < durationSpec.minSec) {
             throw new Error(
-                'TTS_DURATION_RANGE_FAIL: ' + durationSpec.label +
-                ' measured ' + measuredSec.toFixed(1) + 's; required ' +
-                durationSpec.minSec + '-' + durationSpec.maxSec + 's after ' +
-                durationReport.attempts.length + ' correction attempt(s)',
+                'TTS_DURATION_MIN_FAIL: ' + durationSpec.label +
+                ' measured ' + measuredSec.toFixed(1) + 's; minimum required is ' +
+                durationSpec.minSec + 's. No maximum duration is enforced for long-form.',
             );
         }
 
         logInfo(
             'TTS_DURATION_PASS format=' + durationSpec.label +
-            ' measured=' + measuredSec.toFixed(1) + 's within ' +
-            durationSpec.minSec + '-' + durationSpec.maxSec + 's',
+            ' measured=' + measuredSec.toFixed(1) + 's; minimum=' +
+            durationSpec.minSec + 's; maximum=unbounded; words=' + finalWords,
         );
     }
 
