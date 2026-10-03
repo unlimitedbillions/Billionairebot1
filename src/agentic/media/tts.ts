@@ -309,6 +309,13 @@ export async function generateAgenticVoiceovers(
         }
         return fillMissing(plan, scenes, audioDir, /*driven*/ ok > 0);
     } catch (e: any) {
+        // LONG-FORM SAFETY: never convert an incomplete 780–800-word narration
+        // into synthetic tones. That would make the caller see a complete audio
+        // map while hasRealTts() correctly rejects it as non-speech, wasting the
+        // entire render attempt and obscuring the real TTS failure.
+        if (isLongForm) {
+            throw e;
+        }
         console.warn(`⚠ voice engine unavailable ("${e?.message}"); using agent tone fallback.`);
         return fillMissing(plan, [], audioDir, false);
     }
