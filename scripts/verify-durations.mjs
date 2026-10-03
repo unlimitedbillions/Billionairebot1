@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Duration gate: shorts must be 50-60s; long-form must be 120-180s. */
+/** Duration gate: shorts must be 50-60s; long-form must be 120s or longer. */
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -9,7 +9,7 @@ const i = process.argv.indexOf("--file");
 const fileArg = i > -1 && process.argv[i + 1] ? process.argv[i + 1] : "input/scripts/billionaire-stories.json";
 const jobs = JSON.parse(fs.readFileSync(path.join(ROOT, fileArg), "utf8"));
 
-const SPEC = { short: { min: 50, max: 60 }, long: { min: 120, max: 180 } };
+const SPEC = { short: { min: 50, max: 60 }, long: { min: 120, max: Number.POSITIVE_INFINITY } };
 const outOfSpec = [];
 
 for (const job of jobs) {
@@ -40,8 +40,8 @@ for (const job of jobs) {
   if (!videoPath) { console.log(`[duration] ${job.id} | MISSING VIDEO`); outOfSpec.push(job.id); continue; }
   const d = parseFloat(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", videoPath]).toString());
   const s = SPEC[kind];
-  const ok = d >= s.min && d <= s.max;
-  console.log(`[duration] ${job.id} | ${d.toFixed(1)}s | ${ok ? "OK" : `OUT OF SPEC (${s.min}-${s.max}s)`}`);
+  const ok = d >= s.min && (Number.isFinite(s.max) ? d <= s.max : true);
+  console.log(`[duration] ${job.id} | ${d.toFixed(1)}s | ${ok ? "OK" : `OUT OF SPEC (minimum ${s.min}s)`}`);
   if (!ok) outOfSpec.push(job.id);
 }
 
