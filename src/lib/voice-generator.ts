@@ -238,6 +238,18 @@ export async function generateVoiceovers(
     let silentCount = 0;
     const failedScenes: number[] = [];
 
+    // LONG-FORM SAFETY: 780–800-word YouTube narration must contain real
+    // speech for every scene. The old silent-track fallback returned a valid
+    // WAV path, so the caller counted it as success even though it contained
+    // no speech.
+    const totalSpokenWords = scenes
+        .map((s) => (s.voiceoverText ?? '').replace(/\[[^\]]*\]/g, ' '))
+        .join(' ')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length;
+    const requireRealSpeech = totalSpokenWords >= 700 || scenes.length >= 15;
+
     for (let i = 0; i < scenes.length; i++) {
         const scene = scenes[i];
         writeProgress(`\r[VOICE-GEN] Processing scene ${i + 1}/${scenes.length}...`);
@@ -257,8 +269,15 @@ export async function generateVoiceovers(
             const result = await generateSceneVoiceoverWithRetry(scene, outputDir, sceneConfig, voiceEngine);
             audioFiles.set(scene.sceneNumber, result);
 
-            if (result.path) {
+            const isSyntheticSilent = Boolean(result.path && /_silent\.(wav|mp3|m4a|ogg)$/i.test(result.path));
+            if (result.path && (!requireRealSpeech || !isSyntheticSilent)) {
                 successCount++;
+            } else if (result.path && isSyntheticSilent) {
+                silentCount++;
+                if (requireRealSpeech) {
+                    failCount++;
+                    failedScenes.push(scene.sceneNumber);
+                }
             } else if (!scene.voiceoverText.trim()) {
                 silentCount++;
             } else {
@@ -284,6 +303,11 @@ export async function generateVoiceovers(
     if (failedScenes.length > 0) console.log(`[VOICE-GEN] Failed scene numbers: ${failedScenes.join(', ')}`);
     console.log('[VOICE-GEN] ================================================\n');
 
+    if (requireRealSpeech && failCount > 0) {
+        throw new Error(
+            `Long-form real TTS failed: ${failCount}/${scenes.length} scene(s) produced no real speech; synthetic silent fallback is disabled.`,
+        );
+    }
     if (failCount > scenes.length * 0.5) {
         throw new Error(`Too many voice generation failures: ${failCount}/${scenes.length} scenes failed.`);
     }
@@ -468,63 +492,25 @@ async function generateSceneVoiceoverWithRetry(
             );
             return generateSceneVoiceoverWithWindowsSapi(scene, outputDir, config);
         }
+
+        // LONG-FORM SAFETY: never turn a failed speech request into synthetic
+        // silence. The caller must see a hard TTS failure and retry/abort.
+        const spokenWords = (scene.voiceoverText ?? '')
+            .replace(/\[[^\]]*\]/g, ' ')
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean).length;
+        if (spokenWords >= 700 || process.env.AGENTIC_REQUIRE_REAL_TTS === '1') {
+            throw lastError || new Error(
+                `No real speech fallback available for scene ${scene.sceneNumber}; synthetic silence is disabled.`,
+            );
+        }
+
         console.log(
             `[VOICE-GEN] No voice fallback available for scene ${scene.sceneNumber} after all engines failed — using silent track.`,
         );
-        // Last-resort: NEVER let a voiceover failure abort the whole render.
-        // Emit a short silent WAV so the pipeline (and caption ducking) still has
-        // an audio track to mux. A hung/blocked speech backend must not
-        // be able to kill the job.
         return makeSilentTrack(outputDir, scene, config);
-        }
-
-        /**
-        * Generate a brief silent WAV so a render can complete even when every
-        * voice engine is unavailable/blocked. Duration is taken from the scene
-        * (min 3s). This is the ultimate fallback — better a silent video than
-        * a hung/aborted one.
-        */
-        async function makeSilentTrack(
-        outputDir: string,
-        scene: Scene,
-        _config: VoiceConfig,
-        ): Promise<AudioResult> {
-        const { spawnSync } = await import('child_process');
-        const ffmpegStatic: any = await import('ffmpeg-static').then((m) => (m as any).default ?? m).catch(() => null);
-        const ff: string | null = typeof ffmpegStatic === 'string' ? ffmpegStatic : (ffmpegStatic?.path ?? null);
-        const outputPath = path.join(outputDir, `scene_${scene.sceneNumber}_voice_silent.wav`);
-        const dur = Math.max(3, Math.round(scene.duration || 3));
-        try {
-            if (ff) {
-                spawnSync(ff, ['-y', '-f', 'lavfi', '-i', `anullsrc=r=44100:cl=1`, '-t', String(dur), '-q:a', '0', outputPath], { windowsHide: true });
-            }
-            if (!ff || !fs.existsSync(outputPath) || fs.statSync(outputPath).size < 44) {
-                // Synthesize a minimal valid 44-byte WAV header (silent, 1ch, 8kHz) if ffmpeg missing.
-                const wav = Buffer.alloc(44);
-                wav.write('RIFF', 0, 'ascii');
-                wav.writeUInt32LE(36, 4);
-                wav.write('WAVE', 8, 'ascii');
-                wav.write('fmt ', 12, 'ascii');
-                wav.writeUInt32LE(16, 16);
-                wav.writeUInt16LE(1, 20);
-                wav.writeUInt16LE(1, 22);
-                wav.writeUInt32LE(8000, 24);
-                wav.writeUInt32LE(8000, 28);
-                wav.writeUInt16LE(1, 32);
-                wav.writeUInt16LE(8, 34);
-                wav.write('data', 36, 'ascii');
-                wav.writeUInt32LE(0, 40);
-                fs.writeFileSync(outputPath, wav);
-            }
-            return { path: outputPath, duration: dur, captionSegments: undefined };
-        } catch (error: any) {
-            // Absolute worst case: return an empty path; the renderer must tolerate it.
-            console.warn(`[VOICE-GEN] silent-track fallback also failed: ${error.message}`);
-            return { path: '', duration: dur };
-        }
-        }
-
-    return makeSilentTrack(outputDir, scene, config);
+    }    return makeSilentTrack(outputDir, scene, config);
 }
 
 // ─── Edge-TTS scene generation ────────────────────────────────────────────────
