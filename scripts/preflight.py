@@ -51,13 +51,12 @@ def check_narration(source, rendered):
     out_by_id = {str(j.get("id")): j for j in rendered}
     problems = []
 
-    if set(src_by_id) != set(out_by_id):
-        missing = sorted(set(src_by_id) - set(out_by_id))
-        extra = sorted(set(out_by_id) - set(src_by_id))
-        if missing:
-            problems.append("missing jobs: " + ", ".join(missing))
-        if extra:
-            problems.append("unexpected jobs: " + ", ".join(extra))
+    # The production workflow intentionally selects only one person's
+    # short + long jobs from the larger source catalog. Preflight must validate
+    # that selected subset, not require every source job to be rendered.
+    extra = sorted(set(out_by_id) - set(src_by_id))
+    if extra:
+        problems.append("unexpected jobs: " + ", ".join(extra))
 
     for jid, src_job in src_by_id.items():
         if jid not in out_by_id:
@@ -76,7 +75,7 @@ def check_narration(source, rendered):
 
     if problems:
         return False, "; ".join(problems[:6])
-    return True, f"{len(source)} jobs; source narration preserved"
+    return True, f"{len(rendered)} selected jobs; source narration preserved"
 
 
 def check_scene_structure(rendered):
