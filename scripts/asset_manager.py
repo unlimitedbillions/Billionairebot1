@@ -46,7 +46,7 @@ FALLBACK = ROOT / "assets" / "fallback"
 
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "").strip()
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image").strip()
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image").strip()
 API_T = 10           # provider API timeout
 RETRY = 2             # bounded provider retries
 
@@ -299,11 +299,10 @@ def loremflickr_image(query, slot):
 
 
 def gemini_ai_image(query, orient, slot):
-    """Generate a non-person fallback still with Gemini Nano Banana.
+    """Generate a non-person fallback still with Gemini's current image API.
 
-    This is deliberately after Pexels/Wikimedia/Openverse and is never used
-    for real-person/face queries. The generated still is materialized locally
-    before rendering, then b-roll callers convert it to MP4 motion.
+    Uses the Gemini Interactions API and materializes the returned image locally
+    before rendering. This keeps render-time networking at zero.
     """
     if not GEMINI_KEY or is_face_query(query):
         return None
@@ -311,22 +310,25 @@ def gemini_ai_image(query, orient, slot):
     aspect = "16:9" if orient == "landscape" else "9:16" if orient == "portrait" else "1:1"
     prompt = (
         f"Create an original cinematic documentary still illustrating: {query}. "
-        f"Use a realistic editorial photography style, {aspect} composition, "
-        "natural lighting, strong visual storytelling, no text, no logos, "
-        "no watermark, and no recognizable people or faces. Focus on objects, "
-        "places, technology, buildings, finance, industry, or abstract business "
-        "concepts that visually represent the subject."
+        f"Use realistic editorial photography, {aspect} composition, natural lighting, "
+        "strong visual storytelling, no text, no logos, no watermark, and no "
+        "recognizable people or faces. Focus on objects, places, technology, "
+        "buildings, finance, industry, or abstract business concepts that visually "
+        "represent the subject."
     )
     VIS.mkdir(parents=True, exist_ok=True)
     dest = VIS / f"va-ai-{h('gemini|' + query + '|' + orient + '|' + str(slot))}.png"
     payload = {
-        "contents": [{"parts": [{"text": prompt[:4000]}]}],
-        "generationConfig": {
-            "responseModalities": ["IMAGE"],
-            "responseFormat": {"image": {"aspectRatio": aspect}},
+        "model": GEMINI_IMAGE_MODEL,
+        "input": prompt[:4000],
+        "response_format": {
+            "type": "image",
+            "mime_type": "image/png",
+            "aspect_ratio": aspect,
+            "image_size": "1K",
         },
     }
-    url = f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_IMAGE_MODEL}:generateContent"
+    url = "https://generativelanguage.googleapis.com/v1beta/interactions"
     try:
         r = requests.post(
             url,
@@ -339,30 +341,39 @@ def gemini_ai_image(query, orient, slot):
             timeout=AI_T,
         )
         if not r.ok:
-            log(f"  gemini image fallback returned HTTP {r.status_code} for {query!r}")
+            log(f"  gemini image fallback returned HTTP {r.status_code} for {query!r}: {r.text[:300]}")
             return None
+
         data = r.json()
-        parts = (
-            ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts")
-            or []
-        )
-        image_data = next(
-            (
-                p.get("inlineData", {}).get("data")
-                or p.get("inline_data", {}).get("data")
-            )
-            for p in parts
-            if isinstance(p, dict) and (p.get("inlineData") or p.get("inline_data"))
-        )
+        image_data = ((data.get("output_image") or {}).get("data") or "")
+        if not image_data:
+            # Be defensive: the API can expose image content in model-output
+            # steps even when the convenience output_image field is absent.
+            for step in data.get("steps") or []:
+                for block in step.get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "image" and block.get("data"):
+                        image_data = block["data"]
+                        break
+                if image_data:
+                    break
+
         if not image_data:
             log(f"  gemini image fallback returned no image data for {query!r}")
             return None
+
         import base64
-        dest.write_bytes(base64.b64decode(image_data))
+        try:
+            dest.write_bytes(base64.b64decode(image_data, validate=True))
+        except Exception as e:
+            dest.unlink(missing_ok=True)
+            log(f"  gemini image fallback returned invalid base64 for {query!r}: {e}")
+            return None
+
         if not _is_image(dest) or dest.stat().st_size <= 5000:
             dest.unlink(missing_ok=True)
             log(f"  gemini image fallback produced invalid media for {query!r}")
             return None
+
         log(f"  gemini AI image ready: {dest.name} for {query!r}")
         return dest.name
     except Exception as e:
@@ -582,6 +593,13 @@ def download(url, dest):
     return False
 
 def _save(url, prefix, kind, query, orient, slot, source):
+    # Provider results may be either a direct URL string or a metadata object.
+    # Normalize at the download boundary so provider-specific response shapes
+    # can never crash asset preparation.
+    if isinstance(url, dict):
+        url = url.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return None, "missing"
     path_suffix = Path(url.split("?", 1)[0]).suffix.lower()
     if prefix in ("vv", "rv"):
         ext = path_suffix if path_suffix in VIDEO_EXTENSIONS else ".mp4"
@@ -608,7 +626,8 @@ def fetch_image(query, orient, slot):
     for src, fn in (("pexels", lambda: pexels_images(query, orient)),
                     ("wikimedia", lambda: wikimedia_images(query)),
                     ("openverse", lambda: openverse_images(query))):
-        url = _pick(with_retry(fn), slot)
+        candidate = _pick(with_retry(fn), slot)
+        url = candidate_url(candidate)
         if url:
             r = _save(url, "va", "img", query, orient, slot, src)
             if r[0]:
