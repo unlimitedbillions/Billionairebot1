@@ -902,17 +902,17 @@ export async function runAgenticPipeline(
         generatedAt: new Date().toISOString(),
     });
 
-    const acquireTimeboxMs = Number(process.env.ACQUIRE_TIMEBOX_MS ?? 300000);
     // Placeholder/fallback orientation follows the job (read by makePlaceholder
     // and generateFallbackVisual so cards match the frame, never pillarboxed).
     process.env.AGENTIC_JOB_ORIENTATION = plan.orientation === 'landscape' ? 'landscape' : plan.orientation === 'square' ? 'square' : 'portrait';
     process.env.AGENTIC_PLACEHOLDER_ORIENTATION = process.env.AGENTIC_JOB_ORIENTATION;
-    const acquirePromise = acquireAssets(plan, acquireDeps, req.candidatesPerAsset ?? 2);
-    const { workspace, candidates } = await withTimeout(acquirePromise, acquireTimeboxMs, 'acquireAssets')
-        .catch((e) => {
-            logWarn(`⚠ acquire timed out after ${acquireTimeboxMs}ms — proceeding with ${0} candidates`);
-            return { workspace: { jobId, root: '', assetsDir: '', imagesDir: '', videosDir: '', musicDir: '', verificationDir: '' } as any, candidates: [] as any[] };
-        });
+    // Acquisition is a hard PREPARE-stage barrier. acquireAssets() itself now
+    // waits for every materialisation task and installs final image coverage
+    // before returning. Do NOT wrap it in a timeout that proceeds with an empty
+    // candidate set: that would reintroduce the exact race fixed in acquire.ts
+    // when CI_ZERO_NETWORK=1. The workflow-level 120-minute job timeout remains
+    // the last-resort safety boundary for a genuinely wedged run.
+    const { workspace, candidates } = await acquireAssets(plan, acquireDeps, req.candidatesPerAsset ?? 2);
     const zeroNetworkRender = process.env.CI_ZERO_NETWORK === '1';
     if (zeroNetworkRender) {
         const missingScenes = plan.scenes.filter((scene, index) => {
