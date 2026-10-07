@@ -99,9 +99,18 @@ jobs:
           print("Selected jobs:", [j["id"] for j in selected])
           PY
 
+      - name: Verify asset-provider secret wiring
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY || secrets.PEXEL_API_KEY }}
+        run: |
+          if [ -n "$PEXELS_API_KEY" ]; then
+            echo "[secret-check] Pexels API key is PRESENT (value hidden)."
+          else
+            echo "::warning::Pexels API key is NOT reaching the runner. Checked secret names PEXELS_API_KEY and PEXEL_API_KEY."
+          fi
       - name: PLAN + PREPARE (Prefetch + AI Fallback)
         env:
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY || secrets.PEXEL_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_IMAGE_MODEL: gemini-3.1-flash-image
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
@@ -119,7 +128,7 @@ jobs:
       - name: Render shorts + longform (Local Assets + Prepared Audio)
         env:
           CI_ZERO_NETWORK: "1"
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY || secrets.PEXEL_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AGENTIC_VOICE_FALLBACK: "1"
           AUTO_FREE_MUSIC: "true"
