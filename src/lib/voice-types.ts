@@ -17,6 +17,12 @@ export interface VoiceConfig {
     rate: string; // e.g. '+0%', '-10%', '+20%'
     pitch: string; // e.g. '+0Hz', '-5Hz', '+10Hz'
     language?: string;
+    /**
+     * When true, every scene must produce genuine speech. Synthetic silent
+     * tracks are never acceptable. This is explicitly supplied by the agentic
+     * long-form pipeline so per-scene retries cannot lose the job-level rule.
+     */
+    requireRealSpeech?: boolean;
 }
 
 /** A single speech-timed caption cue (relative to scene start, milliseconds). */
