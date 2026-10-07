@@ -248,7 +248,10 @@ export async function generateVoiceovers(
         .trim()
         .split(/\s+/)
         .filter(Boolean).length;
-    const requireRealSpeech = totalSpokenWords >= 700 || scenes.length >= 15;
+    const requireRealSpeech =
+        config.requireRealSpeech === true ||
+        totalSpokenWords >= 700 ||
+        scenes.length >= 15;
 
     for (let i = 0; i < scenes.length; i++) {
         const scene = scenes[i];
@@ -266,7 +269,13 @@ export async function generateVoiceovers(
                 }
             }
 
-            const result = await generateSceneVoiceoverWithRetry(scene, outputDir, sceneConfig, voiceEngine);
+            const result = await generateSceneVoiceoverWithRetry(
+                scene,
+                outputDir,
+                sceneConfig,
+                voiceEngine,
+                requireRealSpeech,
+            );
             audioFiles.set(scene.sceneNumber, result);
 
             const isSyntheticSilent = Boolean(result.path && /_silent\.(wav|mp3|m4a|ogg)$/i.test(result.path));
@@ -433,6 +442,7 @@ async function generateSceneVoiceoverWithRetry(
     outputDir: string,
     config: VoiceConfig,
     voiceEngine: VoiceEngineStatus,
+    requireRealSpeech = false,
 ): Promise<AudioResult> {
     const provider = (process.env.TTS_PROVIDER || '').toLowerCase().trim();
 
@@ -500,7 +510,11 @@ async function generateSceneVoiceoverWithRetry(
             .trim()
             .split(/\s+/)
             .filter(Boolean).length;
-        if (spokenWords >= 700 || process.env.AGENTIC_REQUIRE_REAL_TTS === '1') {
+        if (
+            requireRealSpeech ||
+            spokenWords >= 700 ||
+            process.env.AGENTIC_REQUIRE_REAL_TTS === '1'
+        ) {
             throw lastError || new Error(
                 `No real speech fallback available for scene ${scene.sceneNumber}; synthetic silence is disabled.`,
             );
@@ -510,7 +524,56 @@ async function generateSceneVoiceoverWithRetry(
             `[VOICE-GEN] No voice fallback available for scene ${scene.sceneNumber} after all engines failed — using silent track.`,
         );
         return makeSilentTrack(outputDir, scene, config);
-    }    return makeSilentTrack(outputDir, scene, config);
+    }
+
+    // Non-long-form jobs may still use the legacy silent-track fallback.
+    // Long-form jobs are stopped above before this point.
+    return makeSilentTrack(outputDir, scene, config);
+}
+
+/**
+ * Legacy non-long-form fallback only.
+ *
+ * Long-form callers pass requireRealSpeech=true and are rejected before this
+ * function can be used. Keeping the fallback implementation here preserves
+ * the short-form resilience contract without ever manufacturing "speech"
+ * for a 780–800-word narration.
+ */
+function makeSilentTrack(outputDir: string, scene: Scene, config: VoiceConfig): AudioResult {
+    const safeVoice = typeof config.voice === 'string' ? config.voice : 'default';
+    void safeVoice;
+    const outputPath = path.join(outputDir, `scene_${scene.sceneNumber}_silent.wav`);
+    const duration = Math.max(1.5, scene.duration || estimateAudioDuration(scene.voiceoverText));
+    try {
+        const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
+        const result = spawnSync(
+            ffmpeg,
+            [
+                '-hide_banner',
+                '-loglevel', 'error',
+                '-f', 'lavfi',
+                '-i', `anullsrc=channel_layout=mono:sample_rate=22050`,
+                '-t', String(duration),
+                '-c:a', 'pcm_s16le',
+                '-y',
+                outputPath,
+            ],
+            { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        if (result.error) throw result.error;
+        if (result.status !== 0) {
+            throw new Error(String(result.stderr || `ffmpeg exited with ${result.status}`));
+        }
+        assertGeneratedAudioFile(outputPath);
+        return {
+            path: outputPath,
+            duration: getAudioDuration(outputPath, scene.voiceoverText),
+        };
+    } catch (error: any) {
+        throw new Error(
+            `Unable to create non-speech fallback for scene ${scene.sceneNumber}: ${error?.message ?? error}`,
+        );
+    }
 }
 
 // ─── Edge-TTS scene generation ────────────────────────────────────────────────
