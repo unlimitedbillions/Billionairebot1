@@ -208,7 +208,21 @@ export async function generateAgenticVoiceovers(
         console.warn(`⚠ voicebox backend unavailable ("${e?.message}"); using Edge-TTS fallback`);
     }
 
-    // FALLBACK: Edge-TTS engine (or tones) — never blocks the render.
+    // FALLBACK: Edge-TTS engine (or tones for short-form only).
+    // Compute this OUTSIDE the try/catch so the catch handler cannot lose the
+    // job-level mode through block scope. The explicit VoiceConfig flag is
+    // also forwarded into every long-form per-scene recovery attempt.
+    const totalSpokenWords = plan.scenes
+        .map((s) => (s.voiceoverText ?? '').replace(/\[[^\]]*\]/g, ' '))
+        .join(' ')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length;
+    const isLongForm = totalSpokenWords >= 700 || plan.scenes.length >= 15;
+    if (isLongForm) {
+        console.log('[TTS] Long-form mode: ' + totalSpokenWords + ' spoken words, ' + plan.scenes.length + ' scenes');
+    }
+
     try {
         const { generateVoiceovers } = await import('../../lib/voice-generator.js');
         const allResults = new Map<number, any>();
@@ -222,15 +236,7 @@ export async function generateAgenticVoiceovers(
         }
 
         const errors: string[] = [];
-        const totalSpokenWords = plan.scenes
-            .map((s) => (s.voiceoverText ?? '').replace(/\[[^\]]*\]/g, ' '))
-            .join(' ')
-            .trim()
-            .split(/\s+/)
-            .filter(Boolean).length;
-        const isLongForm = totalSpokenWords >= 700 || plan.scenes.length >= 15;
         const groupTimeoutMs = isLongForm ? LONG_FORM_GROUP_TIMEOUT_MS : VOICE_GROUP_TIMEOUT_MS;
-        if (isLongForm) console.log('[TTS] Long-form mode: ' + totalSpokenWords + ' spoken words, ' + plan.scenes.length + ' scenes; group timeout=' + Math.round(groupTimeoutMs / 1000) + 's');
         for (const [v, scenes] of voiceGroups) {
             const engineScenes = scenes.map((s) => ({
                 sceneNumber: s.sceneNumber,
@@ -243,7 +249,11 @@ export async function generateAgenticVoiceovers(
             }));
             try {
                 const map = await withTimeout(
-                    generateVoiceovers(engineScenes as any, audioDir, { voice: v } as any),
+                    generateVoiceovers(
+                        engineScenes as any,
+                        audioDir,
+                        { voice: v, requireRealSpeech: isLongForm } as any,
+                    ),
                     groupTimeoutMs,
                     `voice generation timed out for "${v}" after ${Math.round(groupTimeoutMs / 1000)}s`,
                 );
@@ -270,7 +280,11 @@ export async function generateAgenticVoiceovers(
                         }];
                         try {
                             const one = await withTimeout(
-                                generateVoiceovers(oneScene as any, audioDir, { voice: v } as any),
+                                generateVoiceovers(
+                                    oneScene as any,
+                                    audioDir,
+                                    { voice: v, requireRealSpeech: true } as any,
+                                ),
                                 LONG_FORM_SCENE_TIMEOUT_MS,
                                 `scene ${s.sceneNumber} TTS timed out for "${v}" after ${Math.round(LONG_FORM_SCENE_TIMEOUT_MS / 1000)}s`,
                             );
@@ -287,7 +301,11 @@ export async function generateAgenticVoiceovers(
         let ok = 0;
         for (const s of plan.scenes) {
             const r: any = allResults.get(s.sceneNumber);
-            if (r?.path && fs.existsSync(r.path)) {
+            if (
+                r?.path &&
+                fs.existsSync(r.path) &&
+                (!isLongForm || fs.statSync(r.path).size > VOICE_FILE_MIN_BYTES)
+            ) {
                 scenes.push({
                     sceneIndex: s.sceneNumber - 1,
                     audioPath: r.path,
