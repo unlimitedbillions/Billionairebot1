@@ -44,7 +44,7 @@ CACHE = ROOT / "cache"
 MANIFEST = CACHE / "assets.json"
 FALLBACK = ROOT / "assets" / "fallback"
 
-PEXELS_KEY = os.getenv("PEXELS_API_KEY", "").strip()
+PEXELS_KEY = (os.getenv("PEXELS_API_KEY") or os.getenv("PEXEL_API_KEY") or "").strip()
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image").strip()
 API_T = 10           # provider API timeout
@@ -710,7 +710,19 @@ def fetch_video(query, orient, slot, blocked=None):
         if motion:
             return motion, f"{image_src}->motion"
 
-    # Tier 3: semantic reuse is deliberately last. It may reuse only a prior
+    # Tier 3: deterministic local motion fallback. This is intentionally
+    # before semantic reuse: if all network providers and relevant-image paths
+    # fail, every scene still gets a valid local MP4 without inventing a
+    # semantically unrelated stock asset.
+    fallback_image = VIS / f"va-fallback-{h('fallback|' + query + '|' + orient + '|' + str(slot))}.jpg"
+    if not fallback_image.exists() and not gradient_image(fallback_image, slot):
+        fallback_image = None
+    if fallback_image:
+        motion = image_to_motion(fallback_image, query, orient, slot)
+        if motion:
+            return motion, "gradient-fallback->motion"
+
+    # Tier 4: semantic reuse is deliberately last. It may reuse only a prior
     # asset with meaningful query overlap and within the normal reuse cap.
     reused = semantic_asset_reuse(query, orient, blocked)
     if reused:
@@ -848,7 +860,7 @@ def process_jobs(jobs):
 
 def main():
     log("provider policy: video network order = " + " -> ".join(VIDEO_PROVIDER_ORDER))
-    log("pexels video provider: " + ("READY (API key present)" if PEXELS_KEY else "SKIPPED (PEXELS_API_KEY missing)"))
+    log("pexels video provider: " + ("READY (API key present)" if PEXELS_KEY else "SKIPPED (PEXELS_API_KEY / PEXEL_API_KEY missing)"))
     log("gemini AI-image fallback: " + ("READY (" + GEMINI_IMAGE_MODEL + ")" if GEMINI_KEY else "SKIPPED (GEMINI_API_KEY missing)"))
     if not SRC.exists():
         sys.exit("[assets] selected production jobs missing: input/scripts/render-jobs.json")
