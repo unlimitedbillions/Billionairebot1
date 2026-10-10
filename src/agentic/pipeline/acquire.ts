@@ -200,7 +200,7 @@ export function generateFallbackVisual(
                 [
                     '-y',
                     '-f', 'lavfi',
-                    '-i', 'gradients=s=720x1280:c0=0x1e3a8a:c1=0x0f172a:x0=0:y0=0:x1=0:y1=720:nb_colors=2',
+                    '-i', 'color=c=0x172554:s=720x1280:r=25',
                     '-f', 'lavfi',
                     '-i', 'anullsrc=r=44100:cl=stereo',
                     '-filter_complex', filter,
@@ -220,7 +220,7 @@ export function generateFallbackVisual(
                 [
                     '-y',
                     '-f', 'lavfi',
-                    '-i', 'gradients=s=720x1280:c0=0x1e3a8a:c1=0x0f172a:x0=0:y0=0:x1=0:y1=720:nb_colors=2',
+                    '-i', 'color=c=0x172554:s=720x1280:r=25',
                     '-frames:v', '1',
                     out,
                 ],
