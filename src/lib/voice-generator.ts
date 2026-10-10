@@ -489,9 +489,25 @@ async function generateSceneVoiceoverWithRetry(
                 `No usable voice engine configured for scene ${scene.sceneNumber}. Enable Edge-TTS or Windows offline speech.`,
             );
         } catch (error: any) {
-            lastError = error;
+            lastError = error instanceof Error ? error : new Error(String(error));
+            console.warn(
+                `[VOICE-GEN] Edge-TTS attempt ${attempt}/${MAX_RETRIES} failed for scene ${scene.sceneNumber}: ${lastError.message}`,
+            );
             if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS * attempt);
         }
+    }
+
+    // Long-form must expose the actual provider error, never return a silent
+    // WAV merely because this Linux runner has no Windows SAPI fallback.
+    const spokenWords = (scene.voiceoverText ?? '')
+        .replace(/\[[^\]]*\]/g, ' ')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length;
+    if (requireRealSpeech || spokenWords >= 700 || process.env.AGENTIC_REQUIRE_REAL_TTS === '1') {
+        throw lastError || new Error(
+            `No real speech generated for scene ${scene.sceneNumber}; synthetic silence is disabled.`,
+        );
     }
 
     if (voiceEngine.activeEngine === 'edge-tts' && voiceEngine.fallbackReady) {
@@ -501,23 +517,6 @@ async function generateSceneVoiceoverWithRetry(
                 `[VOICE-GEN] Falling back to Windows offline speech for scene ${scene.sceneNumber} after Edge-TTS retries failed.`,
             );
             return generateSceneVoiceoverWithWindowsSapi(scene, outputDir, config);
-        }
-
-        // LONG-FORM SAFETY: never turn a failed speech request into synthetic
-        // silence. The caller must see a hard TTS failure and retry/abort.
-        const spokenWords = (scene.voiceoverText ?? '')
-            .replace(/\[[^\]]*\]/g, ' ')
-            .trim()
-            .split(/\s+/)
-            .filter(Boolean).length;
-        if (
-            requireRealSpeech ||
-            spokenWords >= 700 ||
-            process.env.AGENTIC_REQUIRE_REAL_TTS === '1'
-        ) {
-            throw lastError || new Error(
-                `No real speech fallback available for scene ${scene.sceneNumber}; synthetic silence is disabled.`,
-            );
         }
 
         console.log(
