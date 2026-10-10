@@ -125,6 +125,17 @@ jobs:
           CI_ZERO_NETWORK: "1"
         run: python scripts/preflight.py
 
+      - name: Real Edge-TTS speech smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f /tmp/edge-tts-smoke.mp3
+          python -m edge_tts --voice en-US-GuyNeural --text "This is a real speech generation test." --write-media /tmp/edge-tts-smoke.mp3
+          test -s /tmp/edge-tts-smoke.mp3
+          DURATION="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/edge-tts-smoke.mp3)"
+          awk -v d="$DURATION" 'BEGIN { if (d < 0.5) exit 1 }'
+          echo "[tts-smoke] Real Edge-TTS audio generated and verified (${DURATION}s)."
+
       - name: Render shorts + longform (Local Assets + Prepared Audio)
         env:
           CI_ZERO_NETWORK: "1"
