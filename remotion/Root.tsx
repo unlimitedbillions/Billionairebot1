@@ -38,7 +38,10 @@ export const RemotionRoot = () => {
                 so longer videos are NOT truncated at the static 300-frame default. */}
             <Composition
                 id="AgenticVideo"
-                component={AgenticVideo}
+                // Remotion's default generic is Record<string, unknown>; its
+                // current React 19 types reject this strongly typed component
+                // despite the required props being supplied by defaultProps.
+                component={AgenticVideo as React.FC<any>}
                 durationInFrames={300}
                 fps={30}
                 width={1080}
