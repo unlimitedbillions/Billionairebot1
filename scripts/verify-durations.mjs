@@ -25,18 +25,9 @@ for (const job of jobs) {
     path.join(dir, "final.mp4"),
   ];
   let videoPath = candidates.find((p) => fs.existsSync(p) && fs.statSync(p).size > 0);
-  if (!videoPath && fs.existsSync(dir)) {
-    const stack = [dir];
-    while (stack.length && !videoPath) {
-      const current = stack.pop();
-      for (const name of fs.readdirSync(current)) {
-        const p = path.join(current, name);
-        const st = fs.statSync(p);
-        if (st.isDirectory()) stack.push(p);
-        else if (name.endsWith(".mp4") && st.size > 0) { videoPath = p; break; }
-      }
-    }
-  }
+  // Only accept canonical final outputs. Recursively accepting the first MP4
+  // can accidentally select a scene clip, preview, or intermediate render and
+  // falsely validate a missing/failed final video.
   if (!videoPath) { console.log(`[duration] ${job.id} | MISSING VIDEO`); outOfSpec.push(job.id); continue; }
   const d = parseFloat(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", videoPath]).toString());
   const s = SPEC[kind];
