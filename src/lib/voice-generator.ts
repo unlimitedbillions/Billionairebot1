@@ -501,9 +501,14 @@ async function generateSceneVoiceoverWithGemini(scene: Scene, outputDir: string)
 
         fs.writeFileSync(outputPath, Buffer.from(audioBase64, 'base64'));
         assertGeneratedAudioFile(outputPath);
-        const duration = getAudioDuration(outputPath, scene.voiceoverText);
+        // Unlike the legacy duration helper, use strict probing here: it must
+        // not estimate a duration for a corrupt/non-audio response.
+        const durationText = runFfprobe([
+            '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', outputPath,
+        ]).trim();
+        const duration = Number.parseFloat(durationText);
         if (!Number.isFinite(duration) || duration <= 0) {
-            throw new Error('Gemini TTS output has no valid audio duration');
+            throw new Error('Gemini TTS output has no valid probed audio duration');
         }
         writeAudioHashSidecar(outputPath, scene.voiceoverText);
         console.log(`[VOICE-GEN] Gemini TTS generated real audio for scene ${scene.sceneNumber} (${duration.toFixed(2)}s)`);
