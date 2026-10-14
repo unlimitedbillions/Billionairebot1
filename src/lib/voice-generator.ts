@@ -435,6 +435,87 @@ async function generateSceneVoiceoverWithLocalOpenAIWrapper(scene: Scene, output
     }
 }
 
+// ─── Gemini TTS fallback ──────────────────────────────────────────────────────
+// Edge-TTS can return HTTP 403 from hosted runners. When a Gemini API key is
+// configured, use Google's supported TTS Interactions API as a real-speech
+// fallback; never substitute silence for long-form narration.
+async function generateSceneVoiceoverWithGemini(scene: Scene, outputDir: string): Promise<AudioResult> {
+    const apiKey = process.env.GEMINI_API_KEY?.trim();
+    if (!apiKey) throw new Error('GEMINI_API_KEY is not configured');
+
+    const outputPath = path.join(outputDir, `scene_${scene.sceneNumber}_voice_gemini.wav`);
+    const existingAudio = resolveExistingAudio(outputPath, scene.voiceoverText);
+    if (existingAudio) return existingAudio;
+
+    const cleanText = cleanVoiceoverText(scene.voiceoverText);
+    if (!cleanText) throw new Error(`Scene ${scene.sceneNumber} has empty narration`);
+
+    const timeoutMs = Math.max(10000, Number(process.env.GEMINI_TTS_TIMEOUT_MS || 90000));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+            method: 'POST',
+            headers: {
+                'x-goog-api-key': apiKey,
+                'Content-Type': 'application/json',
+                'Api-Revision': '2026-05-20',
+            },
+            body: JSON.stringify({
+                model: process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts',
+                input: cleanText,
+                response_format: { type: 'audio' },
+                generation_config: {
+                    speech_config: [{ voice: process.env.GEMINI_TTS_VOICE || 'Kore' }],
+                },
+            }),
+            signal: controller.signal,
+        });
+
+        const responseText = await response.text();
+        if (!response.ok) {
+            throw new Error(`Gemini TTS HTTP ${response.status}: ${responseText.slice(0, 500)}`);
+        }
+
+        let payload: any;
+        try {
+            payload = JSON.parse(responseText);
+        } catch {
+            throw new Error('Gemini TTS returned invalid JSON');
+        }
+        let audioBase64 = payload?.output_audio?.data;
+        if (!audioBase64 && Array.isArray(payload?.steps)) {
+            for (const step of payload.steps) {
+                const audioBlock = Array.isArray(step?.content)
+                    ? step.content.find((block: any) => block?.type === 'audio' && block?.data)
+                    : undefined;
+                if (audioBlock?.data) {
+                    audioBase64 = audioBlock.data;
+                    break;
+                }
+            }
+        }
+        if (typeof audioBase64 !== 'string' || audioBase64.length === 0) {
+            throw new Error('Gemini TTS response contained no audio data');
+        }
+
+        fs.writeFileSync(outputPath, Buffer.from(audioBase64, 'base64'));
+        assertGeneratedAudioFile(outputPath);
+        const duration = getAudioDuration(outputPath, scene.voiceoverText);
+        if (!Number.isFinite(duration) || duration <= 0) {
+            throw new Error('Gemini TTS output has no valid audio duration');
+        }
+        writeAudioHashSidecar(outputPath, scene.voiceoverText);
+        console.log(`[VOICE-GEN] Gemini TTS generated real audio for scene ${scene.sceneNumber} (${duration.toFixed(2)}s)`);
+        return { path: outputPath, duration };
+    } catch (error: any) {
+        try { fs.unlinkSync(outputPath); } catch { /* ignore missing/partial output */ }
+        throw new Error(`Gemini TTS failed for scene ${scene.sceneNumber}: ${error?.message ?? error}`);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 // ─── Scene-level generation with retry ───────────────────────────────────────
 
 async function generateSceneVoiceoverWithRetry(
@@ -494,6 +575,17 @@ async function generateSceneVoiceoverWithRetry(
                 `[VOICE-GEN] Edge-TTS attempt ${attempt}/${MAX_RETRIES} failed for scene ${scene.sceneNumber}: ${lastError.message}`,
             );
             if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS * attempt);
+        }
+    }
+
+    // Try the authenticated Gemini TTS API before giving up on real speech.
+    // This specifically covers hosted-runner Edge-TTS HTTP 403 failures.
+    if (process.env.GEMINI_API_KEY?.trim()) {
+        try {
+            return await generateSceneVoiceoverWithGemini(scene, outputDir);
+        } catch (error: any) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+            console.warn(`[VOICE-GEN] Gemini TTS fallback failed for scene ${scene.sceneNumber}: ${lastError.message}`);
         }
     }
 
