@@ -66,6 +66,14 @@ def check_narration(source, rendered):
         count = words(script)
         if count <= 0:
             problems.append(f"{jid}: narration is empty")
+        # Production contract: every long-form narration must contain 780–800
+        # spoken words. Validate the authoritative source script here so an
+        # undersized script cannot reach TTS/rendering even if duration is later
+        # padded by visuals, music, or a stale intermediate artifact.
+        if jid.endswith("-long") and not 780 <= count <= 800:
+            problems.append(
+                f"{jid}: long-form narration has {count} words; required range is 780–800"
+            )
         if narration_text(script) != narration_text(out_script):
             problems.append(f"{jid}: narration changed during asset preparation")
         if visual_count(script) != visual_count(out_script):
