@@ -125,16 +125,68 @@ jobs:
           CI_ZERO_NETWORK: "1"
         run: python scripts/preflight.py
 
-      - name: Real Edge-TTS speech smoke test
+      - name: Real speech provider smoke test (Edge-TTS, then Gemini TTS)
         shell: bash
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_TTS_MODEL: gemini-3.8-flash-tts
         run: |
           set -euo pipefail
-          rm -f /tmp/edge-tts-smoke.mp3
-          python -m edge_tts --voice en-US-GuyNeural --text "This is a real speech generation test." --write-media /tmp/edge-tts-smoke.mp3
-          test -s /tmp/edge-tts-smoke.mp3
-          DURATION="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/edge-tts-smoke.mp3)"
-          awk -v d="$DURATION" 'BEGIN { if (d < 0.5) exit 1 }'
-          echo "[tts-smoke] Real Edge-TTS audio generated and verified (${DURATION}s)."
+          rm -f /tmp/edge-tts-smoke.mp3 /tmp/gemini-tts-smoke.wav
+          if python -m edge_tts --voice en-US-GuyNeural --text "This is a real speech generation test." --write-media /tmp/edge-tts-smoke.mp3; then
+            if [ -s /tmp/edge-tts-smoke.mp3 ]; then
+              DURATION="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/edge-tts-smoke.mp3)"
+              if awk -v d="$DURATION" 'BEGIN { exit !(d >= 0.5) }'; then
+                echo "[tts-smoke] Edge-TTS generated real speech (${DURATION}s)."
+                exit 0
+              fi
+            fi
+          fi
+          echo "::warning::Edge-TTS failed; testing authenticated Gemini TTS fallback."
+          python - <<'PY'
+          import base64, json, os, urllib.error, urllib.request
+          key = os.environ.get("GEMINI_API_KEY", "").strip()
+          if not key:
+              raise SystemExit("Edge-TTS failed and GEMINI_API_KEY is missing; cannot generate real speech.")
+          url = "https://generativelanguage.googleapis.com/v1beta/interactions"
+          payload = {
+              "model": os.environ.get("GEMINI_TTS_MODEL", "gemini-3.8-flash-tts"),
+              "input": "This is a real speech generation test.",
+              "response_format": {"type": "audio"},
+              "generation_config": {"speech_config": [{"voice": "Kore"}]},
+          }
+          request = urllib.request.Request(
+              url, data=json.dumps(payload).encode("utf-8"),
+              headers={"x-goog-api-key": key, "Content-Type": "application/json", "Api-Revision": "2026-05-20"},
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  data = json.loads(response.read().decode("utf-8"))
+          except urllib.error.HTTPError as exc:
+              detail = exc.read().decode("utf-8", "replace")[:500]
+              raise SystemExit(f"Gemini TTS HTTP {exc.code}: {detail}")
+          audio = (data.get("output_audio") or {}).get("data")
+          if not audio:
+              for step in data.get("steps", []):
+                  for block in step.get("content", []):
+                      if block.get("type") == "audio" and block.get("data"):
+                          audio = block["data"]
+                          break
+                  if audio:
+                      break
+          if not audio:
+              raise SystemExit("Gemini TTS returned no audio data.")
+          output = "/tmp/gemini-tts-smoke.wav"
+          with open(output, "wb") as file:
+              file.write(base64.b64decode(audio, validate=True))
+          if os.path.getsize(output) < 1000:
+              raise SystemExit("Gemini TTS output is too small to be valid speech.")
+          print(f"[tts-smoke] Gemini TTS generated real audio ({os.path.getsize(output)} bytes).")
+          PY
+          DURATION="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/gemini-tts-smoke.wav)"
+          awk -v d="$DURATION" 'BEGIN { exit !(d >= 0.5) }'
+          echo "[tts-smoke] Gemini TTS audio verified (${DURATION}s)."
 
       - name: Render shorts + longform (Local Assets + Prepared Audio)
         env:
