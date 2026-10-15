@@ -605,6 +605,13 @@ async function generateSceneVoiceoverWithRetry(
         throw lastError || new Error(`Custom TTS provider '${provider}' failed after all retries`);
     }
 
+    // The workflow selects a single provider for the whole production pair
+    // after the pre-download smoke test. This avoids mixing Edge and Piper
+    // voices across scenes when Edge is unavailable at startup.
+    if (process.env.PIPER_FORCE === '1') {
+        return await generateSceneVoiceoverWithPiper(scene, outputDir);
+    }
+
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {

@@ -153,6 +153,10 @@ jobs:
                   edge_ok = False
                   break
           if not edge_ok:
+              # Persist provider choice for all subsequent render steps; do not
+              # mix Edge and Piper voices across scenes in the same production.
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+                  env_file.write("PIPER_FORCE=1\\n")
               output = "/tmp/piper-tts-smoke.wav"
               subprocess.run([sys.executable, "-m", "piper", "-m", os.environ["PIPER_MODEL_PATH"],
                   "-f", output, "--", "This is a real offline speech generation test."], check=True, timeout=120)
