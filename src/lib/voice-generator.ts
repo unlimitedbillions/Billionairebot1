@@ -63,6 +63,25 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
     pitch: '+0Hz',
 };
 
+/**
+ * Normalize partial/untyped caller configs at the API boundary.
+ * Several agentic callers intentionally pass only { voice, requireRealSpeech };
+ * spreading those objects over defaults used to pass "undefined" to edge-tts.
+ */
+export function normalizeVoiceConfig(input?: Partial<VoiceConfig> | null): VoiceConfig {
+    const candidate = input && typeof input === 'object' ? input : {};
+    const voice = typeof candidate.voice === 'string' && candidate.voice.trim()
+        ? candidate.voice.trim()
+        : DEFAULT_VOICE_CONFIG.voice;
+    const rate = typeof candidate.rate === 'string' && /^[+-]\\d{1,3}%$/.test(candidate.rate.trim())
+        ? candidate.rate.trim()
+        : DEFAULT_VOICE_CONFIG.rate;
+    const pitch = typeof candidate.pitch === 'string' && /^[+-]\\d{1,3}Hz$/i.test(candidate.pitch.trim())
+        ? candidate.pitch.trim()
+        : DEFAULT_VOICE_CONFIG.pitch;
+    return { voice, rate, pitch };
+}
+
 // ─── Retry config ─────────────────────────────────────────────────────────────
 
 const MAX_RETRIES = 3;
@@ -217,12 +236,13 @@ export async function generateVoiceovers(
     outputDir: string,
     config: VoiceConfig = DEFAULT_VOICE_CONFIG,
 ): Promise<Map<number, AudioResult>> {
+    const normalizedConfig = normalizeVoiceConfig(config as Partial<VoiceConfig> | null | undefined);
     const voiceEngine = getVoiceEngineStatus();
 
     console.log('\n[VOICE-GEN] ================================================');
     console.log('[VOICE-GEN] Starting voiceover generation...');
     console.log(`[VOICE-GEN] Total scenes: ${scenes.length}`);
-    console.log(`[VOICE-GEN] Voice: ${config.voice}`);
+    console.log(`[VOICE-GEN] Voice: ${normalizedConfig.voice}`);
     console.log(`[VOICE-GEN] Engine: ${voiceEngine.activeEngine}`);
     console.log(`[VOICE-GEN] Detail: ${voiceEngine.detail}`);
     console.log('[VOICE-GEN] ================================================\n');
@@ -258,7 +278,7 @@ export async function generateVoiceovers(
         writeProgress(`\r[VOICE-GEN] Processing scene ${i + 1}/${scenes.length}...`);
 
         try {
-            const sceneConfig = { ...config };
+            const sceneConfig = { ...normalizedConfig };
             if (scene.voiceConfig) {
                 if (scene.voiceConfig.voice) sceneConfig.voice = scene.voiceConfig.voice;
                 if (scene.voiceConfig.rate !== undefined) {
