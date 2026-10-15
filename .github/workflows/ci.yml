@@ -30,7 +30,7 @@ jobs:
 
       - name: Test asset manager offline
         run: |
-          python -m pip install --disable-pip-version-check requests
+          python -m pip install --disable-pip-version-check -r requirements.txt
           python -m unittest scripts.test_asset_manager
 
       - name: Restore offline Piper model cache
@@ -41,7 +41,6 @@ jobs:
 
       - name: Install and smoke-test Piper offline TTS
         run: |
-          python -m pip install --disable-pip-version-check piper-tts==1.8.0
           mkdir -p models/piper
           if [ ! -s models/piper/en_US-lessac-medium.onnx ] || [ ! -s models/piper/en_US-lessac-medium.onnx.json ]; then
             python -m piper.download_voices en_US-lessac-medium --data-dir models/piper
