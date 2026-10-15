@@ -155,6 +155,7 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["provider"], "archive")
         self.assertEqual(results[0]["creator"], "Archive Creator")
+        self.assertEqual(results[0]["license"], "CC BY")
         self.assertEqual(results[0]["license_url"], "https://creativecommons.org/licenses/by/4.0/")
 
         unlicensed = {"metadata": {"creator": "Unknown Creator"},
