@@ -86,6 +86,8 @@ export function normalizeVoiceConfig(input?: Partial<VoiceConfig> | null): Voice
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
+// Do not hammer a quota-exhausted Gemini TTS free tier once it returns HTTP 429.
+let geminiTtsRateLimitedForProcess = false;
 
 // ─── Duration helpers ─────────────────────────────────────────────────────────
 
@@ -460,6 +462,9 @@ async function generateSceneVoiceoverWithLocalOpenAIWrapper(scene: Scene, output
 // configured, use Google's supported TTS Interactions API as a real-speech
 // fallback; never substitute silence for long-form narration.
 async function generateSceneVoiceoverWithGemini(scene: Scene, outputDir: string): Promise<AudioResult> {
+    if (geminiTtsRateLimitedForProcess) {
+        throw new Error('Gemini TTS skipped: this process already received HTTP 429 and will not retry a quota-exhausted provider.');
+    }
     const apiKey = process.env.GEMINI_API_KEY?.trim();
     if (!apiKey) throw new Error('GEMINI_API_KEY is not configured');
 
@@ -494,6 +499,7 @@ async function generateSceneVoiceoverWithGemini(scene: Scene, outputDir: string)
 
         const responseText = await response.text();
         if (!response.ok) {
+            if (response.status === 429) geminiTtsRateLimitedForProcess = true;
             throw new Error(`Gemini TTS HTTP ${response.status}: ${responseText.slice(0, 500)}`);
         }
 
