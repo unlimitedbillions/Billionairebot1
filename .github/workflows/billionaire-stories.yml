@@ -99,6 +99,47 @@ jobs:
           print("Selected jobs:", [j["id"] for j in selected])
           PY
 
+      - name: Real speech provider smoke test (production Edge-TTS voices and settings)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Test every distinct voice selected for this run with the same valid
+          # Edge-TTS rate/pitch values used by production. Do this BEFORE asset
+          # downloads, and fail fast: a one-scene Gemini smoke test cannot prove
+          # that a 34-scene narration will fit a 10-requests/day free-tier quota.
+          python - <<'PY'
+          import json, subprocess, sys
+          from pathlib import Path
+
+          jobs = json.loads(Path("input/scripts/render-jobs.json").read_text(encoding="utf-8"))
+          voices = list(dict.fromkeys(str(j.get("voice") or "en-US-GuyNeural") for j in jobs))
+          if not voices:
+              raise SystemExit("TTS smoke test: no selected production voices")
+
+          for index, voice in enumerate(voices, 1):
+              output = f"/tmp/edge-tts-smoke-{index}.mp3"
+              command = [
+                  sys.executable, "-m", "edge_tts",
+                  "--voice", voice,
+                  "--rate=+0%", "--pitch=+0Hz",
+                  "--text", "This is a real production voice and settings test.",
+                  "--write-media", output,
+              ]
+              try:
+                  subprocess.run(command, check=True, timeout=60, capture_output=True, text=True)
+                  probe = subprocess.run(
+                      ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                       "-of", "default=noprint_wrappers=1:nokey=1", output],
+                      check=True, timeout=15, capture_output=True, text=True,
+                  )
+                  duration = float(probe.stdout.strip())
+              except Exception as exc:
+                  raise SystemExit(f"TTS smoke test failed for voice {voice!r}: {exc}") from exc
+              if duration < 0.5:
+                  raise SystemExit(f"TTS smoke test produced invalid duration for {voice!r}: {duration}")
+              print(f"[tts-smoke] Edge-TTS voice={voice} rate=+0% pitch=+0Hz duration={duration:.2f}s")
+          PY
+
       - name: Verify asset-provider secret wiring
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY || secrets.PEXEL_API_KEY }}
@@ -124,69 +165,6 @@ jobs:
         env:
           CI_ZERO_NETWORK: "1"
         run: python scripts/preflight.py
-
-      - name: Real speech provider smoke test (Edge-TTS, then Gemini TTS)
-        shell: bash
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_TTS_MODEL: gemini-3.8-flash-tts
-        run: |
-          set -euo pipefail
-          rm -f /tmp/edge-tts-smoke.mp3 /tmp/gemini-tts-smoke.wav
-          if python -m edge_tts --voice en-US-GuyNeural --text "This is a real speech generation test." --write-media /tmp/edge-tts-smoke.mp3; then
-            if [ -s /tmp/edge-tts-smoke.mp3 ]; then
-              DURATION="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/edge-tts-smoke.mp3)"
-              if awk -v d="$DURATION" 'BEGIN { exit !(d >= 0.5) }'; then
-                echo "[tts-smoke] Edge-TTS generated real speech (${DURATION}s)."
-                exit 0
-              fi
-            fi
-          fi
-          echo "::warning::Edge-TTS failed; testing authenticated Gemini TTS fallback."
-          python - <<'PY'
-          import base64, json, os, urllib.error, urllib.request
-          key = os.environ.get("GEMINI_API_KEY", "").strip()
-          if not key:
-              raise SystemExit("Edge-TTS failed and GEMINI_API_KEY is missing; cannot generate real speech.")
-          url = "https://generativelanguage.googleapis.com/v1beta/interactions"
-          payload = {
-              "model": os.environ.get("GEMINI_TTS_MODEL", "gemini-3.8-flash-tts"),
-              "input": "This is a real speech generation test.",
-              "response_format": {"type": "audio"},
-              "generation_config": {"speech_config": [{"voice": "Kore"}]},
-          }
-          request = urllib.request.Request(
-              url, data=json.dumps(payload).encode("utf-8"),
-              headers={"x-goog-api-key": key, "Content-Type": "application/json", "Api-Revision": "2026-05-20"},
-              method="POST",
-          )
-          try:
-              with urllib.request.urlopen(request, timeout=60) as response:
-                  data = json.loads(response.read().decode("utf-8"))
-          except urllib.error.HTTPError as exc:
-              detail = exc.read().decode("utf-8", "replace")[:500]
-              raise SystemExit(f"Gemini TTS HTTP {exc.code}: {detail}")
-          audio = (data.get("output_audio") or {}).get("data")
-          if not audio:
-              for step in data.get("steps", []):
-                  for block in step.get("content", []):
-                      if block.get("type") == "audio" and block.get("data"):
-                          audio = block["data"]
-                          break
-                  if audio:
-                      break
-          if not audio:
-              raise SystemExit("Gemini TTS returned no audio data.")
-          output = "/tmp/gemini-tts-smoke.wav"
-          with open(output, "wb") as file:
-              file.write(base64.b64decode(audio, validate=True))
-          if os.path.getsize(output) < 1000:
-              raise SystemExit("Gemini TTS output is too small to be valid speech.")
-          print(f"[tts-smoke] Gemini TTS generated real audio ({os.path.getsize(output)} bytes).")
-          PY
-          DURATION="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/gemini-tts-smoke.wav)"
-          awk -v d="$DURATION" 'BEGIN { exit !(d >= 0.5) }'
-          echo "[tts-smoke] Gemini TTS audio verified (${DURATION}s)."
 
       - name: Render shorts + longform (Local Assets + Prepared Audio)
         env:
