@@ -193,6 +193,9 @@ jobs:
         env:
           CI_ZERO_NETWORK: "1"
         run: python scripts/preflight.py
+ 
+      - name: Verify production parser bindings (zero-network gate)
+        run: npx tsx scripts/verify-production-bindings.ts --file input/scripts/render-jobs.json
 
       - name: Render shorts + longform (Local Assets + Prepared Audio)
         env:
