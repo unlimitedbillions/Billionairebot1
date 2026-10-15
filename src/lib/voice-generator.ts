@@ -639,13 +639,15 @@ async function generateSceneVoiceoverWithRetry(
         console.warn(`[VOICE-GEN] Piper TTS fallback failed for scene ${scene.sceneNumber}: ${lastError.message}`);
     }
 
-    // Last resort: authenticated Gemini TTS, only if configured and still usable.
-    if (process.env.GEMINI_API_KEY?.trim()) {
+    // Gemini TTS is opt-in only. Production defaults to Edge-TTS, then local
+    // Piper; a configured Gemini key must never silently make Gemini the fallback.
+    // Set GEMINI_TTS_FALLBACK=1 explicitly only for a deliberate quota/billing test.
+    if (process.env.GEMINI_TTS_FALLBACK === '1' && process.env.GEMINI_API_KEY?.trim()) {
         try {
             return await generateSceneVoiceoverWithGemini(scene, outputDir);
         } catch (error: any) {
             lastError = error instanceof Error ? error : new Error(String(error));
-            console.warn(`[VOICE-GEN] Gemini TTS fallback failed for scene ${scene.sceneNumber}: ${lastError.message}`);
+            console.warn(`[VOICE-GEN] Explicit Gemini TTS fallback failed for scene ${scene.sceneNumber}: ${lastError.message}`);
         }
     }
 
