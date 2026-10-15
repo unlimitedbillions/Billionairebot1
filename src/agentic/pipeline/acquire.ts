@@ -377,6 +377,19 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
         // footage without stock fetching. Skipped when a file is missing so
         // the stock ladder below still runs (never blocks a scene).
         const zeroNetwork = process.env.CI_ZERO_NETWORK === '1';
+
+        // A stale/invalid local binding must not disable the zero-network pool.
+        // Previously, any truthy scene.localAsset skipped localPoolEntry(), then
+        // a missing file fell straight into the generated-fallback path. For
+        // video scenes that fallback may not exist, despite a valid prepared
+        // local pool being available.
+        if (scene.localAsset && !fs.existsSync(inputAssetPath(scene.localAsset))) {
+            console.warn(
+                `[acquire] scene ${i + 1} local asset "${scene.localAsset}" is missing; clearing stale binding and trying prepared local pool`,
+            );
+            scene.localAsset = undefined;
+        }
+
         if ((deps.localPool || zeroNetwork) && !scene.localAsset) {
             const poolEntry = localPoolEntry(i, effectiveKind);
             if (poolEntry) {
