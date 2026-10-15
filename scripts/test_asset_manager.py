@@ -184,6 +184,25 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
         self.assertEqual(result[0], "rv-fresh-licensed.mp4")
         self.assertNotEqual(result[0], expected_cached_name)
 
+    def test_downloaded_wikimedia_metadata_is_persisted_with_asset(self):
+        candidate = {
+            "url": "https://upload.wikimedia.org/example.jpg",
+            "provider": "wikimedia",
+            "source_url": "https://commons.wikimedia.org/wiki/File:Example.jpg",
+            "title": "File:Example.jpg",
+            "creator": "Example Creator",
+            "license": "CC BY 4.0",
+            "license_url": "https://creativecommons.org/licenses/by/4.0/",
+            "media_type": "photo",
+        }
+        with patch.object(am, "download", return_value=True):
+            name, source = am._save(candidate, "va", "img", "example", "portrait", 0, "wikimedia")
+        self.assertTrue(name)
+        self.assertEqual(source, "wikimedia")
+        self.assertEqual(am.ASSET_ATTRIBUTIONS[name]["creator"], "Example Creator")
+        self.assertEqual(am.ASSET_ATTRIBUTIONS[name]["license"], "CC BY 4.0")
+        self.assertNotIn(name, am.UNLICENSED_CACHED_ASSETS)
+
     def test_wikimedia_credits_are_added_to_upload_description(self):
         episode = {"scenes": [{"attribution": {
             "provider": "wikimedia", "source_url": "https://commons.wikimedia.org/wiki/File:Example.jpg",
