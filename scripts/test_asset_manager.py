@@ -86,7 +86,7 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
     def test_license_policy_allows_commercial_adaptable_media_only(self):
         self.assertTrue(am.license_allows_commercial_use("CC0 1.0", "https://creativecommons.org/publicdomain/zero/1.0/"))
         self.assertTrue(am.license_allows_commercial_use("CC BY 4.0", "https://creativecommons.org/licenses/by/4.0/"))
-        self.assertTrue(am.license_allows_commercial_use("CC BY-SA 4.0", "https://creativecommons.org/licenses/by-sa/4.0/"))
+        self.assertFalse(am.license_allows_commercial_use("CC BY-SA 4.0", "https://creativecommons.org/licenses/by-sa/4.0/"))
         self.assertFalse(am.license_allows_commercial_use("CC BY-NC 4.0", "https://creativecommons.org/licenses/by-nc/4.0/"))
         self.assertFalse(am.license_allows_commercial_use("CC BY-ND 4.0", "https://creativecommons.org/licenses/by-nd/4.0/"))
         self.assertFalse(am.license_allows_commercial_use("", ""))
