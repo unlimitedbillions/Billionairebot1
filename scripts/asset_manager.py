@@ -15,6 +15,11 @@ Rules:
         -> semantic reuse (last resort).
         Image scenes use Pexels -> Wikimedia -> Openverse -> Gemini AI -> local fallback.
         Pollinations/LoremFlickr are not production-critical providers.
+  * Wikimedia/Openverse/Internet Archive media is accepted only when provider
+    metadata identifies a commercially usable, adaptable license (CC0/Public
+    Domain, CC BY or CC BY-SA). NC, ND and unknown licenses are rejected.
+  * Creator, source and license metadata are stored in the manifest and upload
+    description; legacy stock files without recorded licensing are not reused.
   * Semantic asset reuse is a LAST-RESORT fallback only, after real video and
     relevant image->motion fallbacks fail; unrelated assets are never reused.
   * Face safety: queries that look like a real person NEVER go to AI or random
@@ -1097,6 +1102,7 @@ def main():
     MANIFEST.write_text(json.dumps({
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "policy": {"pexels_timeout_s": API_T, "pexels_max_retries": RETRY,
+                   "media_license_policy": "allow CC0/Public Domain, CC BY and CC BY-SA; reject NC, ND and unknown licenses",
                    "max_reuse_per_file": MAX_REUSE,
                    "semantic_reuse": "last_resort",
                    "motion_fallback_seconds": MOTION_SECONDS,
