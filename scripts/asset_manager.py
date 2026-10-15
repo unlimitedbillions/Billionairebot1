@@ -166,8 +166,9 @@ def load_previous_attributions():
                 name = Path(asset).name
                 if attribution:
                     ASSET_ATTRIBUTIONS[name] = attribution
-                elif source.startswith(("wikimedia", "openverse", "archive")):
-                    # Never silently reuse older downloaded stock with unknown licensing.
+                elif not source.startswith(("local", "bundled-fallback", "gradient", "gemini-ai", "asset-creator")):
+                    # Never silently reuse legacy stock/cache/semantic-reuse files
+                    # unless the prior manifest recorded a usable license/credit.
                     UNLICENSED_CACHED_ASSETS.add(name)
 
 
