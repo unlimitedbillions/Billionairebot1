@@ -10,7 +10,7 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.old_vis, self.old_cache = am.VIS, am.CACHE
+        self.old_vis, self.old_cache, self.old_manifest = am.VIS, am.CACHE, am.MANIFEST
         self.old_preexisting = set(am.PREEXISTING)
         self.old_attributions = dict(am.ASSET_ATTRIBUTIONS)
         self.old_unlicensed = set(am.UNLICENSED_CACHED_ASSETS)
@@ -18,13 +18,14 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
         am.UNLICENSED_CACHED_ASSETS.clear()
         am.VIS = self.root / "input" / "visuals"
         am.CACHE = self.root / "cache"
+        am.MANIFEST = am.CACHE / "assets.json"
         am.PREEXISTING.clear()
         am.usage.clear()
         am.VIS.mkdir(parents=True)
         am.CACHE.mkdir(parents=True)
 
     def tearDown(self):
-        am.VIS, am.CACHE = self.old_vis, self.old_cache
+        am.VIS, am.CACHE, am.MANIFEST = self.old_vis, self.old_cache, self.old_manifest
         am.PREEXISTING.clear()
         am.PREEXISTING.update(self.old_preexisting)
         am.ASSET_ATTRIBUTIONS.clear()
@@ -159,6 +160,28 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
                       "files": [{"name": "business.mp4", "format": "MPEG4", "size": "100000"}]}
         with patch.object(am, "get", side_effect=[search, unlicensed]):
             self.assertEqual(am.archive_videos("business office"), [])
+
+    def test_legacy_stock_without_license_metadata_is_not_reused(self):
+        asset_name = "rv-legacy-unlicensed.mp4"
+        (am.VIS / asset_name).write_bytes(b"legacy-video-placeholder")
+        am.PREEXISTING.add(asset_name)
+        am.MANIFEST.write_text(json.dumps({"episodes": [{"scenes": [{
+            "asset_video": f"input/visuals/{asset_name}",
+            "source": "archive", "query": "business office", "attribution": None,
+        }]}]}), encoding="utf-8")
+
+        am.load_previous_attributions()
+        self.assertIn(asset_name, am.UNLICENSED_CACHED_ASSETS)
+
+        query = "business office"
+        expected_cached_name = "rv-" + am.h(f"video|{query}|portrait|0") + ".mp4"
+        (am.VIS / expected_cached_name).write_bytes(b"cached-unlicensed-video")
+        am.PREEXISTING.add(expected_cached_name)
+        am.UNLICENSED_CACHED_ASSETS.add(expected_cached_name)
+        with patch.object(am, "fetch_video", return_value=("rv-fresh-licensed.mp4", "pexels")):
+            result = am.assign(query, "portrait")
+        self.assertEqual(result[0], "rv-fresh-licensed.mp4")
+        self.assertNotEqual(result[0], expected_cached_name)
 
     def test_wikimedia_credits_are_added_to_upload_description(self):
         episode = {"scenes": [{"attribution": {
