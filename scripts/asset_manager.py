@@ -128,7 +128,7 @@ def license_allows_commercial_use(license_name, license_url=""):
     name = clean_metadata_text(license_name).lower()
     url = clean_metadata_text(license_url).lower()
     combined = f"{name} {url}"
-    if any(term in combined for term in ("by-nc", "by-nd", "noncommercial", "non-commercial", "no derivatives")):
+    if any(term in combined for term in ("by-nc", "by-nd", "by-sa", "noncommercial", "non-commercial", "no derivatives", "share alike")):
         return False
     if any(term in combined for term in (
         "creativecommons.org/publicdomain/zero/",
@@ -136,11 +136,9 @@ def license_allows_commercial_use(license_name, license_url=""):
         "cc0", "public domain", "public-domain", "public domain mark",
     )):
         return True
-    if re.search(r"creativecommons\.org/licenses/by-sa(?:/|$)", url):
-        return True
     if re.search(r"creativecommons\.org/licenses/by(?:/|$)", url):
         return True
-    return name in {"by", "by-sa", "cc by", "cc by-sa", "pdm"}
+    return name in {"by", "cc by", "pdm"}
 
 
 def log(m):
@@ -1103,7 +1101,7 @@ def main():
     MANIFEST.write_text(json.dumps({
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "policy": {"pexels_timeout_s": API_T, "pexels_max_retries": RETRY,
-                   "media_license_policy": "allow CC0/Public Domain, CC BY and CC BY-SA; reject NC, ND and unknown licenses",
+                   "media_license_policy": "allow CC0/Public Domain and CC BY; reject NC, ND, SA and unknown licenses",
                    "max_reuse_per_file": MAX_REUSE,
                    "semantic_reuse": "last_resort",
                    "motion_fallback_seconds": MOTION_SECONDS,
