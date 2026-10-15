@@ -73,10 +73,10 @@ export function normalizeVoiceConfig(input?: Partial<VoiceConfig> | null): Voice
     const voice = typeof candidate.voice === 'string' && candidate.voice.trim()
         ? candidate.voice.trim()
         : DEFAULT_VOICE_CONFIG.voice;
-    const rate = typeof candidate.rate === 'string' && /^[+-]\\d{1,3}%$/.test(candidate.rate.trim())
+    const rate = typeof candidate.rate === 'string' && /^[+-]\d{1,3}%$/.test(candidate.rate.trim())
         ? candidate.rate.trim()
         : DEFAULT_VOICE_CONFIG.rate;
-    const pitch = typeof candidate.pitch === 'string' && /^[+-]\\d{1,3}Hz$/i.test(candidate.pitch.trim())
+    const pitch = typeof candidate.pitch === 'string' && /^[+-]\d{1,3}Hz$/i.test(candidate.pitch.trim())
         ? candidate.pitch.trim()
         : DEFAULT_VOICE_CONFIG.pitch;
     return { voice, rate, pitch };
