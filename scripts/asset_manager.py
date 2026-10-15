@@ -805,6 +805,8 @@ def _save(url, prefix, kind, query, orient, slot, source):
                 "media_type": metadata.get("media_type") or kind,
                 "media_id": metadata.get("media_id"),
             }
+            # A fresh validated download replaces any legacy unlicensed cache entry.
+            UNLICENSED_CACHED_ASSETS.discard(dest.name)
         return dest.name, source
     return None, "missing"
 
