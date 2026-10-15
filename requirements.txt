@@ -1,6 +1,6 @@
-# Direct Python runtime dependencies pinned to versions observed working in
-# production workflow run #96 (2026-10-14). Update deliberately, then validate
-# the full workflow; do not silently float TTS/OAuth/HTTP behavior on each run.
+# Direct Python dependencies pinned to versions resolved during production
+# workflow run #96 (2026-10-14). Installation succeeded, but that run did not
+# validate every integration. Upgrade deliberately and re-run CI before release.
 
 # --- TTS voiceover (pipeline voice engine + preflight Audio check) ---
 edge-tts==7.3.1
