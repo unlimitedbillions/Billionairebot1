@@ -12,6 +12,8 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.old_vis, self.old_cache = am.VIS, am.CACHE
         self.old_preexisting = set(am.PREEXISTING)
+        self.old_attributions = dict(am.ASSET_ATTRIBUTIONS)
+        am.ASSET_ATTRIBUTIONS.clear()
         am.VIS = self.root / "input" / "visuals"
         am.CACHE = self.root / "cache"
         am.PREEXISTING.clear()
@@ -23,6 +25,8 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
         am.VIS, am.CACHE = self.old_vis, self.old_cache
         am.PREEXISTING.clear()
         am.PREEXISTING.update(self.old_preexisting)
+        am.ASSET_ATTRIBUTIONS.clear()
+        am.ASSET_ATTRIBUTIONS.update(self.old_attributions)
         am.usage.clear()
         self.tmp.cleanup()
 
@@ -50,6 +54,26 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
         scene = episodes[0]["scenes"][0]
         self.assertEqual(scene["type"], "broll")
         self.assertEqual(scene["asset_video"], "input/visuals/hero.mp4")
+
+    def test_pexels_credits_are_added_to_upload_description_and_manifest(self):
+        am.ASSET_ATTRIBUTIONS["pexels-clip.mp4"] = {
+            "provider": "pexels", "source_url": "https://www.pexels.com/video/example-123/",
+            "photographer": "Example Creator", "photographer_url": "https://www.pexels.com/@example/",
+            "media_type": "video", "media_id": 123,
+        }
+        jobs = [{"id": "bezos-long", "orientation": "portrait", "platform": "youtube",
+                 "description": "Original description.",
+                 "script": "Narrated business history. [Visual: startup office]"}]
+        with patch.object(am, "assign", return_value=("pexels-clip.mp4", "pexels", "video")), patch.object(am, "media_duration", return_value=8.0):
+            episodes, rewritten = am.process_jobs(jobs)
+        am.apply_attribution_credits(episodes, rewritten)
+        scene = episodes[0]["scenes"][0]
+        description = rewritten[0]["description"]
+        self.assertEqual(scene["attribution"]["provider"], "pexels")
+        self.assertIn("https://www.pexels.com/", description)
+        self.assertIn("Example Creator", description)
+        self.assertIn("https://www.pexels.com/video/example-123/", description)
+        self.assertTrue(description.startswith("Original description."))
 
 
 if __name__ == "__main__":

@@ -66,6 +66,7 @@ HTTP_HEADERS = {"User-Agent": "BillionaireBot/1.0 (https://github.com/unlimitedb
 VISUAL_RE = re.compile(r"\[Visual:\s*(?P<val>[^\]]+?)\s*\]")
 usage = {}
 PREEXISTING = set()
+ASSET_ATTRIBUTIONS = {}
 
 FACE_KEYWORDS = ["portrait", "face", "head", "musk", "bezos", "gates", "jobs",
                  "buffett", "arnault", "page", "brin", "person", "man", "woman",
@@ -105,6 +106,57 @@ def candidate_url(candidate):
 
 def log(m):
     print(f"[assets] {m}", flush=True)
+
+
+def load_previous_attributions():
+    """Restore per-file credits from the previous manifest before cache reuse."""
+    try:
+        previous = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    for episode in previous.get("episodes", []):
+        for scene in episode.get("scenes", []):
+            attribution = scene.get("attribution")
+            source = str(scene.get("source") or "").lower()
+            if not attribution and source.startswith("pexels"):
+                attribution = {"provider": "pexels", "source_url": "https://www.pexels.com/"}
+            if not attribution:
+                continue
+            for field in ("asset", "asset_video"):
+                asset = scene.get(field)
+                if asset:
+                    ASSET_ATTRIBUTIONS[Path(asset).name] = attribution
+
+
+def apply_attribution_credits(episodes, jobs):
+    """Append Pexels links and available photographer credits to upload descriptions."""
+    for episode, job in zip(episodes, jobs):
+        credits = {}
+        for scene in episode.get("scenes", []):
+            attribution = scene.get("attribution") or {}
+            if attribution.get("provider") != "pexels":
+                continue
+            source_url = attribution.get("source_url") or "https://www.pexels.com/"
+            photographer = str(attribution.get("photographer") or "").strip()
+            photographer_url = str(attribution.get("photographer_url") or "").strip()
+            if photographer:
+                person = f"{photographer} ({photographer_url})" if photographer_url else photographer
+                line = f"Photo/video by {person} on Pexels: {source_url}"
+            else:
+                line = f"Pexels media: {source_url}"
+            credits[source_url] = line
+        if not credits:
+            continue
+        description = str(job.get("description") or "").strip()
+        if "Visual credits — Pexels" in description:
+            continue
+        lines = ["Visual credits — Pexels", "Photos and videos provided by Pexels: https://www.pexels.com/"]
+        for line in sorted(credits.values()):
+            tentative = (description + "\n\n" if description else "") + "\n".join(lines + [line])
+            if len(tentative) <= 4900:
+                lines.append(line)
+        block = "\n".join(lines)
+        job["description"] = ((description + "\n\n") if description else "") + block
 
 
 def h(s):
@@ -154,7 +206,14 @@ def pexels_videos(query, orient):
         pick = next((f for f in sorted(files, key=lambda x: x.get("width", 0))
                      if 0 < f.get("width", 99999) <= 1280), None) or (files[0] if files else None)
         if pick:
-            out.append(pick["link"])
+            user = v.get("user") or {}
+            out.append({
+                "url": pick["link"],
+                "source_url": v.get("url") or "https://www.pexels.com/",
+                "photographer": user.get("name"),
+                "photographer_url": user.get("url"),
+                "provider": "pexels", "media_type": "video", "media_id": v.get("id"),
+            })
     return out
 
 
@@ -165,7 +224,11 @@ def pexels_images(query, orient):
     d = get("https://api.pexels.com/v1/search",
             {"query": query, "orientation": orient, "per_page": 3},
             {"Authorization": PEXELS_KEY})
-    return [p["src"]["large"] for p in d.get("photos", [])]
+    return [{
+        "url": p["src"]["large"], "source_url": p.get("url") or "https://www.pexels.com/",
+        "photographer": p.get("photographer"), "photographer_url": p.get("photographer_url"),
+        "provider": "pexels", "media_type": "photo", "media_id": p.get("id"),
+    } for p in d.get("photos", []) if p.get("src", {}).get("large")]
 
 
 # ---------------- KEY-LESS PROVIDERS -----------------------------------------
@@ -610,20 +673,25 @@ def download(url, dest):
     return False
 
 def _save(url, prefix, kind, query, orient, slot, source):
-    # Provider results may be either a direct URL string or a metadata object.
-    # Normalize at the download boundary so provider-specific response shapes
-    # can never crash asset preparation.
-    if isinstance(url, dict):
-        url = url.get("url")
-    if not isinstance(url, str) or not url.strip():
+    # Keep provider metadata alongside the media file; direct URLs are still
+    # accepted for keyless providers and local fallback assets.
+    metadata = url if isinstance(url, dict) else {}
+    download_url = metadata.get("url") if metadata else url
+    if not isinstance(download_url, str) or not download_url.strip():
         return None, "missing"
-    path_suffix = Path(url.split("?", 1)[0]).suffix.lower()
+    path_suffix = Path(download_url.split("?", 1)[0]).suffix.lower()
     if prefix in ("vv", "rv"):
         ext = path_suffix if path_suffix in VIDEO_EXTENSIONS else ".mp4"
     else:
         ext = path_suffix if path_suffix in IMAGE_EXTENSIONS else ".jpg"
     dest = VIS / f"{prefix}-{h(kind + '|' + query + '|' + orient + '|' + str(slot))}{ext}"
-    if download(url, dest):
+    if download(download_url, dest):
+        if source == "pexels":
+            ASSET_ATTRIBUTIONS[dest.name] = {
+                "provider": "pexels", "source_url": metadata.get("source_url") or "https://www.pexels.com/",
+                "photographer": metadata.get("photographer"), "photographer_url": metadata.get("photographer_url"),
+                "media_type": metadata.get("media_type") or kind, "media_id": metadata.get("media_id"),
+            }
         return dest.name, source
     return None, "missing"
 
@@ -646,7 +714,7 @@ def fetch_image(query, orient, slot):
         candidate = _pick(with_retry(fn), slot)
         url = candidate_url(candidate)
         if url:
-            r = _save(url, "va", "img", query, orient, slot, src)
+            r = _save(candidate, "va", "img", query, orient, slot, src)
             if r[0]:
                 return r
 
@@ -698,7 +766,7 @@ def fetch_video(query, orient, slot, blocked=None):
             url = candidate_url(candidate)
             if not url:
                 continue
-            r = _save(url, "rv", "vid", query, orient, slot, src)
+            r = _save(candidate, "rv", "vid", query, orient, slot, src)
             if r[0]:
                 return r
 
@@ -708,6 +776,8 @@ def fetch_video(query, orient, slot, blocked=None):
     if image_name:
         motion = image_to_motion(VIS / image_name, query, orient, slot)
         if motion:
+            if image_name in ASSET_ATTRIBUTIONS:
+                ASSET_ATTRIBUTIONS[motion] = ASSET_ATTRIBUTIONS[image_name]
             return motion, f"{image_src}->motion"
 
     # Tier 3: deterministic local motion fallback. This is intentionally
@@ -832,6 +902,7 @@ def process_jobs(jobs):
                             "type": "broll", "asset": None,
                             "asset_video": f"input/visuals/{motion_name}",
                             "source": "local-image->motion", "query": val,
+                            "attribution": ASSET_ATTRIBUTIONS.get(motion_name),
                             "visual_segment": {
                                 "asset_video": f"input/visuals/{motion_name}",
                                 "duration": media_duration(media_path),
@@ -845,6 +916,7 @@ def process_jobs(jobs):
                         "type": "broll", "asset": None,
                         "asset_video": f"input/visuals/{local_name}",
                         "source": "local", "query": local_name,
+                        "attribution": ASSET_ATTRIBUTIONS.get(local_name),
                         "visual_segment": {
                             "asset_video": f"input/visuals/{local_name}",
                             "duration": media_duration(media_path),
@@ -860,7 +932,8 @@ def process_jobs(jobs):
                                 "type": "portrait" if kind == "image" else "broll",
                                 "asset": f"input/visuals/{fname}" if (fname and kind == "image") else None,
                                 "asset_video": f"input/visuals/{fname}" if (fname and kind == "video") else None,
-                                "source": src, "query": val}
+                                "source": src, "query": val,
+                                "attribution": ASSET_ATTRIBUTIONS.get(fname)}
                 # Canonical render-ready segment metadata. The scene duration
                 # remains narration/TTS-controlled; this is the source media's
                 # own measured duration for validation/diagnostics only.
@@ -906,7 +979,9 @@ def main():
         sys.exit(f"[assets] expected exactly one short + one long production pair; got {len(jobs)} jobs / people={people}")
     log(f"planning {len(jobs)} episode(s) for {people}; prefetching images + clips BEFORE render...")
 
+    load_previous_attributions()
     episodes, rewritten = process_jobs(jobs)
+    apply_attribution_credits(episodes, rewritten)
 
     MANIFEST.write_text(json.dumps({
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
