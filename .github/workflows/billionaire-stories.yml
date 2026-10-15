@@ -122,6 +122,48 @@ jobs:
           print("Selected jobs:", [j["id"] for j in selected])
           PY
 
+      - name: Real speech provider smoke test (Edge-TTS, then Piper offline)
+        shell: bash
+        env:
+          PIPER_MODEL_PATH: ${{ github.workspace }}/models/piper/en_US-lessac-medium.onnx
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          jobs = json.loads(Path("input/scripts/render-jobs.json").read_text(encoding="utf-8"))
+          voices = list(dict.fromkeys(str(j.get("voice") or "en-US-GuyNeural") for j in jobs))
+          if not voices:
+              raise SystemExit("TTS smoke test: no selected production voices")
+          edge_ok = True
+          for index, voice in enumerate(voices, 1):
+              output = f"/tmp/edge-tts-smoke-{index}.mp3"
+              command = [sys.executable, "-m", "edge_tts", "--voice", voice, "--rate=+0%", "--pitch=+0Hz",
+                         "--text", "This is a real production voice and settings test.", "--write-media", output]
+              try:
+                  subprocess.run(command, check=True, timeout=60, capture_output=True, text=True)
+                  probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                      "-of", "default=noprint_wrappers=1:nokey=1", output], check=True, timeout=15,
+                      capture_output=True, text=True)
+                  duration = float(probe.stdout.strip())
+                  if duration < 0.5: raise RuntimeError(f"invalid duration {duration}")
+                  print(f"[tts-smoke] Edge-TTS voice={voice} rate=+0% pitch=+0Hz duration={duration:.2f}s")
+              except Exception as exc:
+                  print(f"::warning::Edge-TTS smoke failed for {voice!r}; use Piper fallback: {exc}")
+                  edge_ok = False
+                  break
+          if not edge_ok:
+              output = "/tmp/piper-tts-smoke.wav"
+              subprocess.run([sys.executable, "-m", "piper", "-m", os.environ["PIPER_MODEL_PATH"],
+                  "-f", output, "--", "This is a real offline speech generation test."], check=True, timeout=120)
+              probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                  "-of", "default=noprint_wrappers=1:nokey=1", output], check=True, timeout=15,
+                  capture_output=True, text=True)
+              duration = float(probe.stdout.strip())
+              if duration < 0.5: raise SystemExit(f"Piper TTS smoke produced invalid duration: {duration}")
+              print(f"[tts-smoke] Piper fallback generated real speech ({duration:.2f}s).")
+          PY
+
       - name: Verify asset-provider secret wiring
         env:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY || secrets.PEXEL_API_KEY }}
@@ -147,28 +189,6 @@ jobs:
         env:
           CI_ZERO_NETWORK: "1"
         run: python scripts/preflight.py
-
-      - name: Real speech provider smoke test (Edge-TTS, then Piper offline)
-        shell: bash
-        env:
-          PIPER_MODEL_PATH: ${{ github.workspace }}/models/piper/en_US-lessac-medium.onnx
-        run: |
-          set -euo pipefail
-          rm -f /tmp/edge-tts-smoke.mp3 /tmp/piper-tts-smoke.wav
-          if python -m edge_tts --voice en-US-GuyNeural --text "This is a real speech generation test." --write-media /tmp/edge-tts-smoke.mp3; then
-            if [ -s /tmp/edge-tts-smoke.mp3 ]; then
-              DURATION="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/edge-tts-smoke.mp3)"
-              if awk -v d="$DURATION" 'BEGIN { exit !(d >= 0.5) }'; then
-                echo "[tts-smoke] Edge-TTS generated real speech (${DURATION}s)."
-                exit 0
-              fi
-            fi
-          fi
-          echo "::warning::Edge-TTS failed; verifying local Piper fallback (no API quota)."
-          python -m piper -m "$PIPER_MODEL_PATH" -f /tmp/piper-tts-smoke.wav -- "This is a real offline speech generation test."
-          DURATION="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/piper-tts-smoke.wav)"
-          awk -v d="$DURATION" 'BEGIN { exit !(d >= 0.5) }'
-          echo "[tts-smoke] Piper generated real speech (${DURATION}s)."
 
       - name: Render shorts + longform (Local Assets + Prepared Audio)
         env:

@@ -32,6 +32,7 @@ const VIDEO_ASSET_EXTENSIONS = new Set([
     '.mp4', '.webm', '.mov', '.mkv', '.m4v', '.avi', '.mpeg', '.mpg', '.m2ts',
     '.mts', '.ts', '.ogv', '.3gp', '.flv', '.wmv', '.asf',
 ]);
+const IMAGE_ASSET_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
 
 /**
  * Run async producers with a bounded concurrency. `tasks` is an array of
@@ -252,8 +253,21 @@ export interface AcquireResult {
     candidates: AssetCandidate[];
 }
 
+/**
+ * Resolve explicit local media kind before the narration-driven preference.
+ * A narrated scene can intentionally use a prepared portrait image.
+ */
+export function expectedVisualKind(scene: Pick<ScenePlan, 'visualPreference' | 'localAsset'>): 'image' | 'video' {
+    const ext = path.extname(scene.localAsset || '').toLowerCase();
+    if (IMAGE_ASSET_EXTENSIONS.has(ext)) return 'image';
+    if (VIDEO_ASSET_EXTENSIONS.has(ext)) return 'video';
+    return scene.visualPreference === 'video' || scene.visualPreference === 'video-gen' || scene.visualPreference === 'video-gen-local'
+        ? 'video'
+        : 'image';
+}
+
 /** Media extensions accepted from the local material pool. */
-const POOL_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.m4v', '.jpg', '.jpeg', '.png', '.webp']);
+const POOL_EXTENSIONS = new Set([...VIDEO_ASSET_EXTENSIONS, ...IMAGE_ASSET_EXTENSIONS]);
 
 /** Scanned pool files (lazy, once per process). Sorted for deterministic order. */
 let _poolCache: string[] | null = null;
@@ -382,6 +396,11 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
         // footage without stock fetching. Skipped when a file is missing so
         // the stock ladder below still runs (never blocks a scene).
         const zeroNetwork = process.env.CI_ZERO_NETWORK === '1';
+        // A stale explicit binding must not block the prepared local pool.
+        if (scene.localAsset && !fs.existsSync(inputAssetPath(scene.localAsset))) {
+            console.warn(`[acquire] scene ${i + 1} local asset "${scene.localAsset}" is missing; clearing stale binding and trying prepared local pool`);
+            scene.localAsset = undefined;
+        }
         if ((deps.localPool || zeroNetwork) && !scene.localAsset) {
             const poolEntry = localPoolEntry(i, effectiveKind);
             if (poolEntry) {

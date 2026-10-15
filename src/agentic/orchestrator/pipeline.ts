@@ -8,7 +8,7 @@ import { resolveFreeBackgroundMusic } from '../../lib/free-music.js';
 import { inputAssetPath, inputBgmPath, inputVoiceoverPath } from '../../lib/path-safety.js';
 import { LANGUAGE_DEFAULTS } from '../../lib/voice-data.js';
 import { buildPlan, applyProEdits } from '../pipeline/plan.js';
-import { acquireAssets, AcquireDeps, FetchedVisual } from '../pipeline/acquire.js';
+import { acquireAssets, AcquireDeps, FetchedVisual, expectedVisualKind } from '../pipeline/acquire.js';
 import { verifyAll, VerifyDeps } from '../pipeline/verify.js';
 import { runGateway, GatewayDeps } from '../pipeline/gateway.js';
 import { runFinalGate } from '../pipeline/gate.js';
@@ -916,10 +916,7 @@ export async function runAgenticPipeline(
     const zeroNetworkRender = process.env.CI_ZERO_NETWORK === '1';
     if (zeroNetworkRender) {
         const missingScenes = plan.scenes.filter((scene, index) => {
-            const expectedKind: 'image' | 'video' =
-                scene.visualPreference === 'video' || scene.visualPreference === 'video-gen' || scene.visualPreference === 'video-gen-local'
-                    ? 'video'
-                    : 'image';
+            const expectedKind = expectedVisualKind(scene);
             return !candidates.some(
                 (candidate) =>
                     candidate.sceneIndex === index &&
