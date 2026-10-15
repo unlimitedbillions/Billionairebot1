@@ -43,11 +43,12 @@ export async function validateProductionBindings(jobs: ProductionJob[]): Promise
       continue;
     }
 
-    if (parsed.scenes.length < tags.length) {
-      errors.push(`${id}: parser produced ${parsed.scenes.length} scenes for ${tags.length} visual tags`);
+    if (parsed.scenes.length !== tags.length) {
+      errors.push(`${id}: parser produced ${parsed.scenes.length} scenes for ${tags.length} visual tags; every production scene must have exactly one prepared visual`);
+      continue;
     }
 
-    for (let index = 0; index < tags.length; index++) {
+    for (let index = 0; index < parsed.scenes.length; index++) {
       const tag = tags[index];
       const scene = parsed.scenes[index];
       if (!scene) {
@@ -59,7 +60,11 @@ export async function validateProductionBindings(jobs: ProductionJob[]): Promise
         continue;
       }
 
-      const resolved = inputAssetPath(path.basename(scene.localAsset));
+      if (path.basename(scene.localAsset) !== scene.localAsset) {
+        errors.push(`${id} scene ${index + 1}: unsafe non-filename local asset binding "${scene.localAsset}"`);
+        continue;
+      }
+      const resolved = inputAssetPath(scene.localAsset);
       if (!fs.existsSync(resolved)) {
         errors.push(`${id} scene ${index + 1}: parser bound "${scene.localAsset}" but file is missing at ${resolved}`);
       }
