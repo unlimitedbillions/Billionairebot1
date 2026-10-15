@@ -133,6 +133,9 @@ jobs:
                       check=True, timeout=15, capture_output=True, text=True,
                   )
                   duration = float(probe.stdout.strip())
+              except subprocess.CalledProcessError as exc:
+                  detail = (exc.stderr or exc.stdout or str(exc))[-1200:]
+                  raise SystemExit(f"TTS smoke test failed for voice {voice!r}: {detail}") from exc
               except Exception as exc:
                   raise SystemExit(f"TTS smoke test failed for voice {voice!r}: {exc}") from exc
               if duration < 0.5:
