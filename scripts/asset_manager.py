@@ -818,10 +818,39 @@ def process_jobs(jobs):
                     if not local_path.is_file():
                         log(f"  local visual missing: {local_name!r}")
                         return m.group(0)
-                    scenes.append({"id": f"scene-{n:03d}",
-                                   "duration": round(scene_words(line) / WPS, 1),
-                                   "type": "local", "asset": f"input/visuals/{local_name}",
-                                   "asset_video": None, "source": "local", "query": local_name})
+                    duration = round(scene_words(line) / WPS, 1)
+                    if safe_suffix in IMAGE_EXTENSIONS:
+                        # Spoken scenes are video-preferred downstream. Convert
+                        # a user-supplied still to local motion now, before render.
+                        motion_name = image_to_motion(local_path, val, orient, n - 1)
+                        if not motion_name:
+                            log(f"  local image could not be converted to motion: {local_name!r}")
+                            return m.group(0)
+                        media_path = VIS / motion_name
+                        scenes.append({
+                            "id": f"scene-{n:03d}", "duration": duration,
+                            "type": "broll", "asset": None,
+                            "asset_video": f"input/visuals/{motion_name}",
+                            "source": "local-image->motion", "query": val,
+                            "visual_segment": {
+                                "asset_video": f"input/visuals/{motion_name}",
+                                "duration": media_duration(media_path),
+                                "scene_id": f"scene-{n:03d}", "source": "local-image->motion",
+                            },
+                        })
+                        return f"[Visual: {motion_name}]"
+                    media_path = local_path
+                    scenes.append({
+                        "id": f"scene-{n:03d}", "duration": duration,
+                        "type": "broll", "asset": None,
+                        "asset_video": f"input/visuals/{local_name}",
+                        "source": "local", "query": local_name,
+                        "visual_segment": {
+                            "asset_video": f"input/visuals/{local_name}",
+                            "duration": media_duration(media_path),
+                            "scene_id": f"scene-{n:03d}", "source": "local",
+                        },
+                    })
                     return f"[Visual: {local_name}]"
                 fname, src, kind = assign(val, orient, episode_used_assets)
                 if fname:

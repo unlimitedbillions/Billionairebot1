@@ -1,5 +1,6 @@
 # --- TTS voiceover (pipeline voice engine + preflight Audio check) ---
 edge-tts
+piper-tts==1.8.0
 
 # --- Video ingestion (keep UNPINNED: YouTube extractors change often) ---
 yt-dlp

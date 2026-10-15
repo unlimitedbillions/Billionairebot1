@@ -33,6 +33,7 @@ import { generateVoiceoverWithKokoro } from './api-tts-provider';
 import ffprobePath from 'ffprobe-static';
 
 import { AudioResult, VoiceConfig, VoiceEngineStatus } from './voice-types';
+import { normalizeVoiceConfig } from './voice-config';
 import {
     getVoiceEngineStatus,
     getWindowsSapiStatus,
@@ -217,6 +218,9 @@ export async function generateVoiceovers(
     outputDir: string,
     config: VoiceConfig = DEFAULT_VOICE_CONFIG,
 ): Promise<Map<number, AudioResult>> {
+    // Agentic callers may pass partial configs. Normalize here so `undefined`
+    // can never reach Edge-TTS as --rate=undefined / --pitch=undefined.
+    config = normalizeVoiceConfig(config);
     const voiceEngine = getVoiceEngineStatus();
 
     console.log('\n[VOICE-GEN] ================================================');
@@ -272,7 +276,7 @@ export async function generateVoiceovers(
             const result = await generateSceneVoiceoverWithRetry(
                 scene,
                 outputDir,
-                sceneConfig,
+                normalizeVoiceConfig(sceneConfig),
                 voiceEngine,
                 requireRealSpeech,
             );
@@ -435,6 +439,37 @@ async function generateSceneVoiceoverWithLocalOpenAIWrapper(scene: Scene, output
     }
 }
 
+// ─── Piper offline TTS fallback ───────────────────────────────────────────────
+// Local synthesis: no API key, request quota, or network access is needed.
+async function generateSceneVoiceoverWithPiper(scene: Scene, outputDir: string): Promise<AudioResult> {
+    const outputPath = path.join(outputDir, `scene_${scene.sceneNumber}_voice_piper.wav`);
+    const existingAudio = resolveExistingAudio(outputPath, scene.voiceoverText);
+    if (existingAudio) return existingAudio;
+    const cleanText = cleanVoiceoverText(scene.voiceoverText);
+    if (!cleanText) throw new Error(`Scene ${scene.sceneNumber} has empty narration`);
+    const modelPath = path.resolve(process.env.PIPER_MODEL_PATH || path.join(process.cwd(), 'models', 'piper', 'en_US-lessac-medium.onnx'));
+    if (!fs.existsSync(modelPath) || !fs.existsSync(`${modelPath}.json`)) {
+        throw new Error(`Piper model or config missing: ${modelPath}`);
+    }
+    const python = process.env.PIPER_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+    const result = spawnSync(python, ['-m', 'piper', '-m', modelPath, '-f', outputPath, '--', cleanText], {
+        encoding: 'utf8', timeout: Math.max(30000, Number(process.env.PIPER_SCENE_TIMEOUT_MS || 120000)),
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (result.error) throw new Error(`Piper spawn failed: ${result.error.message}`);
+    if (result.status !== 0) {
+        const detail = String(result.stderr || result.stdout || '').trim().slice(-600);
+        throw new Error(`Piper exited with ${result.status}: ${detail || 'no diagnostic output'}`);
+    }
+    assertGeneratedAudioFile(outputPath);
+    const durationText = runFfprobe(['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', outputPath]).trim();
+    const duration = Number.parseFloat(durationText);
+    if (!Number.isFinite(duration) || duration <= 0) throw new Error('Piper output has no valid probed audio duration');
+    writeAudioHashSidecar(outputPath, scene.voiceoverText);
+    console.log(`[VOICE-GEN] Piper generated real audio for scene ${scene.sceneNumber} (${duration.toFixed(2)}s)`);
+    return { path: outputPath, duration };
+}
+
 // ─── Gemini TTS fallback ──────────────────────────────────────────────────────
 // Edge-TTS can return HTTP 403 from hosted runners. When a Gemini API key is
 // configured, use Google's supported TTS Interactions API as a real-speech
@@ -583,8 +618,15 @@ async function generateSceneVoiceoverWithRetry(
         }
     }
 
-    // Try the authenticated Gemini TTS API before giving up on real speech.
-    // This specifically covers hosted-runner Edge-TTS HTTP 403 failures.
+    // Prefer the quota-free local model before any hosted TTS API.
+    try {
+        return await generateSceneVoiceoverWithPiper(scene, outputDir);
+    } catch (error: any) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        console.warn(`[VOICE-GEN] Piper TTS fallback failed for scene ${scene.sceneNumber}: ${lastError.message}`);
+    }
+
+    // Last resort: authenticated Gemini TTS, only if configured and still usable.
     if (process.env.GEMINI_API_KEY?.trim()) {
         try {
             return await generateSceneVoiceoverWithGemini(scene, outputDir);

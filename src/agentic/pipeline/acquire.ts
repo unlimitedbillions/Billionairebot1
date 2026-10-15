@@ -28,6 +28,11 @@ import { isVideoGenEnabled, generateSceneVideo, buildVideoGenPrompt } from '../.
 import { enqueueJob, getJobResult } from '../../lib/ai/job-queue.js';
 import type { AiJobKind } from '../../lib/ai/types.js';
 
+const VIDEO_ASSET_EXTENSIONS = new Set([
+    '.mp4', '.webm', '.mov', '.mkv', '.m4v', '.avi', '.mpeg', '.mpg', '.m2ts',
+    '.mts', '.ts', '.ogv', '.3gp', '.flv', '.wmv', '.asf',
+]);
+
 /**
  * Run async producers with a bounded concurrency. `tasks` is an array of
  * zero-arg thunks returning a Promise. At most `limit` run at once; results
@@ -264,7 +269,7 @@ function localPoolEntry(sceneIndex: number, desiredKind: 'image' | 'video'): str
     if (_poolCache === null) scanPool();
     const pool = _poolCache!.filter((file) => {
         const ext = path.extname(file).toLowerCase();
-        const isVideo = ['.mp4', '.mov', '.webm', '.m4v'].includes(ext);
+        const isVideo = VIDEO_ASSET_EXTENSIONS.has(ext);
         return desiredKind === 'video' ? isVideo : !isVideo;
     });
     if (pool.length === 0) return null;
@@ -275,7 +280,7 @@ function localPoolEntry(sceneIndex: number, desiredKind: 'image' | 'video'): str
         scanPool();
         const refreshed = _poolCache!.filter((file) => {
             const ext = path.extname(file).toLowerCase();
-            const isVideo = ['.mp4', '.mov', '.webm', '.m4v'].includes(ext);
+            const isVideo = VIDEO_ASSET_EXTENSIONS.has(ext);
             return desiredKind === 'video' ? isVideo : !isVideo;
         });
         if (refreshed.length === 0) return null;
@@ -381,7 +386,7 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
             const poolEntry = localPoolEntry(i, effectiveKind);
             if (poolEntry) {
                 const ext = path.extname(poolEntry).toLowerCase();
-                const isVideo = ['.mp4', '.mov', '.webm', '.m4v'].includes(ext);
+                const isVideo = VIDEO_ASSET_EXTENSIONS.has(ext);
                 const destName = `candidate_${i + 1}${ext}`;
                 const destPath = path.join(dir, destName);
                 fs.mkdirSync(dir, { recursive: true });
@@ -407,7 +412,7 @@ export async function acquireAssets(plan: Plan, deps: AcquireDeps, candidatesPer
             const srcPath = inputAssetPath(scene.localAsset);
             if (fs.existsSync(srcPath)) {
                 const ext = path.extname(scene.localAsset).toLowerCase();
-                const isVideo = ['.mp4', '.mov', '.webm', '.m4v'].includes(ext);
+                const isVideo = VIDEO_ASSET_EXTENSIONS.has(ext);
                 const destName = `candidate_1${ext}`;
                 const destPath = path.join(dir, destName);
                 fs.mkdirSync(dir, { recursive: true });
