@@ -247,6 +247,23 @@ export interface AcquireResult {
     candidates: AssetCandidate[];
 }
 
+/**
+ * Resolve the media kind for an explicit local binding before consulting the
+ * narration-driven visual preference. A spoken scene can intentionally use a
+ * still portrait; treating every narrated scene as video makes the zero-network
+ * render gate reject valid prepared images.
+ */
+export function expectedVisualKind(scene: Pick<ScenePlan, 'visualPreference' | 'localAsset'>): 'image' | 'video' {
+    const ext = path.extname(scene.localAsset || '').toLowerCase();
+    if (['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext)) return 'image';
+    if (['.mp4', '.mov', '.webm', '.m4v', '.mkv', '.avi'].includes(ext)) return 'video';
+    return scene.visualPreference === 'video' ||
+        scene.visualPreference === 'video-gen' ||
+        scene.visualPreference === 'video-gen-local'
+        ? 'video'
+        : 'image';
+}
+
 /** Media extensions accepted from the local material pool. */
 const POOL_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.m4v', '.jpg', '.jpeg', '.png', '.webp']);
 
