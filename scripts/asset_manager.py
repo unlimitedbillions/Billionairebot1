@@ -15,6 +15,11 @@ Rules:
         -> semantic reuse (last resort).
         Image scenes use Pexels -> Wikimedia -> Openverse -> Gemini AI -> local fallback.
         Pollinations/LoremFlickr are not production-critical providers.
+  * Wikimedia/Openverse/Internet Archive media is accepted only when provider
+    metadata identifies a commercially usable, adaptable license (CC0/Public
+    Domain or CC BY). NC, ND, SA and unknown licenses are rejected.
+  * Creator, source and license metadata are stored in the manifest and upload
+    description; legacy stock files without recorded licensing are not reused.
   * Semantic asset reuse is a LAST-RESORT fallback only, after real video and
     relevant image->motion fallbacks fail; unrelated assets are never reused.
   * Face safety: queries that look like a real person NEVER go to AI or random
@@ -24,6 +29,7 @@ Rules:
     [Visual: filename.jpg] in the script — bound locally, zero network.
 """
 import hashlib
+import html
 import json
 import os
 import re
@@ -67,6 +73,7 @@ VISUAL_RE = re.compile(r"\[Visual:\s*(?P<val>[^\]]+?)\s*\]")
 usage = {}
 PREEXISTING = set()
 ASSET_ATTRIBUTIONS = {}
+UNLICENSED_CACHED_ASSETS = set()
 
 FACE_KEYWORDS = ["portrait", "face", "head", "musk", "bezos", "gates", "jobs",
                  "buffett", "arnault", "page", "brin", "person", "man", "woman",
@@ -104,12 +111,42 @@ def candidate_url(candidate):
     return candidate.get("url") if isinstance(candidate, dict) else candidate
 
 
+def clean_metadata_text(value):
+    """Strip markup from provider metadata before placing it in manifests/descriptions."""
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def license_allows_commercial_use(license_name, license_url=""):
+    """Allow only clearly identified commercial-use licenses suitable for adaptation.
+
+    NC (non-commercial) and ND (no-derivatives) licenses are excluded because
+    this pipeline may monetize videos and crop/animate/re-edit source media.
+    Unknown/missing licenses are rejected rather than assumed free.
+    """
+    name = clean_metadata_text(license_name).lower()
+    url = clean_metadata_text(license_url).lower()
+    combined = f"{name} {url}"
+    if any(term in combined for term in ("by-nc", "by-nd", "by-sa", "noncommercial", "non-commercial", "no derivatives", "share alike")):
+        return False
+    if any(term in combined for term in (
+        "creativecommons.org/publicdomain/zero/",
+        "creativecommons.org/publicdomain/mark/",
+        "cc0", "public domain", "public-domain", "public domain mark",
+    )):
+        return True
+    if re.search(r"creativecommons\.org/licenses/by(?:/|$)", url):
+        return True
+    return name in {"by", "cc by", "pdm"} or name.startswith("cc by ")
+
+
 def log(m):
     print(f"[assets] {m}", flush=True)
 
 
 def load_previous_attributions():
-    """Restore per-file credits from the previous manifest before cache reuse."""
+    """Restore credits and flag legacy stock assets whose license was never recorded."""
     try:
         previous = json.loads(MANIFEST.read_text(encoding="utf-8"))
     except Exception:
@@ -120,42 +157,67 @@ def load_previous_attributions():
             source = str(scene.get("source") or "").lower()
             if not attribution and source.startswith("pexels"):
                 attribution = {"provider": "pexels", "source_url": "https://www.pexels.com/"}
-            if not attribution:
-                continue
             for field in ("asset", "asset_video"):
                 asset = scene.get(field)
-                if asset:
-                    ASSET_ATTRIBUTIONS[Path(asset).name] = attribution
+                if not asset:
+                    continue
+                name = Path(asset).name
+                if attribution:
+                    ASSET_ATTRIBUTIONS[name] = attribution
+                elif not source.startswith(("local", "bundled-fallback", "gradient", "gemini-ai", "asset-creator")):
+                    # Never silently reuse legacy stock/cache/semantic-reuse files
+                    # unless the prior manifest recorded a usable license/credit.
+                    UNLICENSED_CACHED_ASSETS.add(name)
 
 
 def apply_attribution_credits(episodes, jobs):
-    """Append Pexels links and available photographer credits to upload descriptions."""
+    """Append source, creator and license links for every externally sourced asset."""
     for episode, job in zip(episodes, jobs):
         credits = {}
+        providers = set()
         for scene in episode.get("scenes", []):
             attribution = scene.get("attribution") or {}
-            if attribution.get("provider") != "pexels":
+            provider = str(attribution.get("provider") or "").lower()
+            if provider not in {"pexels", "wikimedia", "openverse", "archive"}:
                 continue
-            source_url = attribution.get("source_url") or "https://www.pexels.com/"
-            photographer = str(attribution.get("photographer") or "").strip()
-            photographer_url = str(attribution.get("photographer_url") or "").strip()
-            if photographer:
-                person = f"{photographer} ({photographer_url})" if photographer_url else photographer
-                line = f"Photo/video by {person} on Pexels: {source_url}"
+            source_url = str(attribution.get("source_url") or "").strip()
+            if not source_url:
+                continue
+            title = str(attribution.get("title") or "").strip()
+            creator = str(attribution.get("creator") or attribution.get("photographer") or "").strip()
+            creator_url = str(attribution.get("creator_url") or attribution.get("photographer_url") or "").strip()
+            license_name = str(attribution.get("license") or "").strip()
+            license_url = str(attribution.get("license_url") or "").strip()
+            if provider == "pexels":
+                person = f"{creator} ({creator_url})" if creator and creator_url else creator
+                line = f"Pexels — {('by ' + person + ' — ') if person else ''}{source_url}"
             else:
-                line = f"Pexels media: {source_url}"
+                if not license_allows_commercial_use(license_name, license_url):
+                    continue
+                label = title or source_url
+                if creator:
+                    label += f" — by {creator}" + (f" ({creator_url})" if creator_url else "")
+                label += f" — {license_name or 'license'}"
+                if license_url:
+                    label += f" ({license_url})"
+                line = f"{provider.title()}: {label} — source: {source_url}"
             credits[source_url] = line
+            providers.add(provider)
         if not credits:
             continue
         description = str(job.get("description") or "").strip()
-        if "Visual credits — Pexels" in description:
+        if "Visual credits — media sources" in description:
             continue
-        lines = ["Visual credits — Pexels", "Photos and videos provided by Pexels: https://www.pexels.com/"]
-        for line in sorted(credits.values()):
-            tentative = (description + "\n\n" if description else "") + "\n".join(lines + [line])
+        lines = ["Visual credits — media sources"]
+        if "pexels" in providers:
+            lines.append("Pexels media is used under the Pexels License: https://www.pexels.com/license/")
+        lines.extend(sorted(credits.values()))
+        kept = []
+        for line in lines:
+            tentative = (description + "\n\n" if description else "") + "\n".join(kept + [line])
             if len(tentative) <= 4900:
-                lines.append(line)
-        block = "\n".join(lines)
+                kept.append(line)
+        block = "\n".join(kept)
         job["description"] = ((description + "\n\n") if description else "") + block
 
 
@@ -233,7 +295,7 @@ def pexels_images(query, orient):
 
 # ---------------- KEY-LESS PROVIDERS -----------------------------------------
 def _wikimedia_search(query, media_kind, limit=10):
-    """Search Commons via the Action API and return concrete media URLs."""
+    """Search Commons and return media only when its license is suitable for commercial adaptation."""
     query = provider_query(query)
     variants = [query]
     compact = " ".join(w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) >= 4)
@@ -247,7 +309,7 @@ def _wikimedia_search(query, media_kind, limit=10):
             d = get("https://commons.wikimedia.org/w/api.php", {
                 "action": "query", "format": "json", "generator": "search",
                 "gsrsearch": search, "gsrnamespace": "6", "gsrlimit": str(limit),
-                "prop": "imageinfo", "iiprop": "url|mime|size", "iiurlwidth": "1920",
+                "prop": "imageinfo", "iiprop": "url|mime|size|extmetadata", "iiurlwidth": "1920",
             })
             pages = (d.get("query") or {}).get("pages") or {}
             for p in sorted(pages.values(), key=lambda x: x.get("index", 999)):
@@ -255,6 +317,13 @@ def _wikimedia_search(query, media_kind, limit=10):
                 mime = str(ii.get("mime") or "").lower()
                 size = int(ii.get("size") or 0)
                 title = str(p.get("title") or "")
+                ext = ii.get("extmetadata") or {}
+                license_name = clean_metadata_text((ext.get("LicenseShortName") or {}).get("value"))
+                license_url = clean_metadata_text((ext.get("LicenseUrl") or {}).get("value"))
+                if not license_allows_commercial_use(license_name, license_url):
+                    continue
+                creator = clean_metadata_text((ext.get("Artist") or {}).get("value") or (ext.get("Credit") or {}).get("value"))
+                source_url = "https://commons.wikimedia.org/wiki/" + quote(title.replace(" ", "_"), safe=":/")
                 if media_kind == "image":
                     if mime not in ("image/jpeg", "image/png", "image/webp"):
                         continue
@@ -262,7 +331,10 @@ def _wikimedia_search(query, media_kind, limit=10):
                     if not url or url in seen:
                         continue
                     seen.add(url)
-                    out.append({"url": url, "text": title, "size": size, "mime": mime})
+                    out.append({"url": url, "text": title, "title": title, "creator": creator,
+                                "source_url": source_url, "provider": "wikimedia",
+                                "license": license_name, "license_url": license_url,
+                                "media_type": "photo", "size": size, "mime": mime})
                 else:
                     if not mime.startswith("video/") or not ii.get("url"):
                         continue
@@ -271,7 +343,10 @@ def _wikimedia_search(query, media_kind, limit=10):
                     if ii["url"] in seen:
                         continue
                     seen.add(ii["url"])
-                    out.append({"url": ii["url"], "text": title, "size": size, "mime": mime})
+                    out.append({"url": ii["url"], "text": title, "title": title, "creator": creator,
+                                "source_url": source_url, "provider": "wikimedia",
+                                "license": license_name, "license_url": license_url,
+                                "media_type": "video", "size": size, "mime": mime})
         except Exception as e:
             log(f"  wikimedia {media_kind} search failed for {search!r}: {e}")
     return out
@@ -285,8 +360,27 @@ def wikimedia_videos(query):
     return _wikimedia_search(query, "video", limit=12)
 
 def openverse_images(query):
-    d = get("https://api.openverse.org/v1/images/", {"q": query, "page_size": 3})
-    return [r["url"] for r in d.get("results", []) if r.get("url")]
+    """Return Openverse images only when license metadata permits commercial reuse and adaptation."""
+    d = get("https://api.openverse.org/v1/images/", {
+        "q": query, "page_size": 10, "license": "cc0,by,by-sa,pdm",
+    })
+    out = []
+    for result in d.get("results", []):
+        url = result.get("url")
+        license_name = str(result.get("license") or "").strip()
+        license_url = str(result.get("license_url") or "").strip()
+        if not url or not license_allows_commercial_use(license_name, license_url):
+            continue
+        out.append({
+            "url": url, "text": result.get("title") or "",
+            "title": clean_metadata_text(result.get("title")),
+            "creator": clean_metadata_text(result.get("creator")),
+            "creator_url": result.get("creator_url"),
+            "source_url": result.get("foreign_landing_url") or result.get("detail_url") or url,
+            "provider": "openverse", "license": license_name,
+            "license_url": license_url, "media_type": "photo",
+        })
+    return out
 
 
 def archive_videos(query):
@@ -313,6 +407,22 @@ def archive_videos(query):
             m = get(f"https://archive.org/metadata/{quote(str(ident), safe='')}")
             title = str(doc.get("title") or ident)
             description = str(doc.get("description") or "")
+            item_meta = m.get("metadata") or {}
+            raw_license = clean_metadata_text(item_meta.get("license"))
+            license_url = clean_metadata_text(item_meta.get("licenseurl") or (raw_license if raw_license.lower().startswith(("http://", "https://")) else ""))
+            license_name = "" if raw_license.lower().startswith(("http://", "https://")) else raw_license
+            if not license_name:
+                if "publicdomain/zero/" in license_url.lower():
+                    license_name = "CC0"
+                elif "publicdomain/mark/" in license_url.lower():
+                    license_name = "Public Domain Mark"
+                elif "creativecommons.org/licenses/by/" in license_url.lower():
+                    license_name = "CC BY"
+            if not license_allows_commercial_use(license_name, license_url):
+                log(f"  archive item skipped (missing or unsuitable reuse license): {ident}")
+                continue
+            creator = clean_metadata_text(item_meta.get("creator") or item_meta.get("artist"))
+            source_url = f"https://archive.org/details/{quote(str(ident), safe='')}"
             files = m.get("files") or []
             candidates = []
             for f in files:
@@ -341,7 +451,10 @@ def archive_videos(query):
                 if url in seen:
                     continue
                 seen.add(url)
-                out.append({"url": url, "text": f"{title} {description} {name} {fmt}"})
+                out.append({"url": url, "text": f"{title} {description} {name} {fmt}",
+                            "title": title, "creator": creator, "source_url": source_url,
+                            "provider": "archive", "license": license_name,
+                            "license_url": license_url, "media_type": "video", "media_id": ident})
         except Exception as e:
             log(f"  archive item {ident} failed: {e}")
     return out
@@ -541,7 +654,7 @@ def semantic_asset_reuse(query, orient, blocked):
             if not asset or not prior_query:
                 continue
             path = ROOT / asset
-            if not path.exists() or path.name in blocked:
+            if not path.exists() or path.name in blocked or path.name in UNLICENSED_CACHED_ASSETS:
                 continue
             used = usage.get(path.name, 0)
             if used >= MAX_REUSE:
@@ -686,12 +799,22 @@ def _save(url, prefix, kind, query, orient, slot, source):
         ext = path_suffix if path_suffix in IMAGE_EXTENSIONS else ".jpg"
     dest = VIS / f"{prefix}-{h(kind + '|' + query + '|' + orient + '|' + str(slot))}{ext}"
     if download(download_url, dest):
-        if source == "pexels":
+        if source in {"pexels", "wikimedia", "openverse", "archive"} and metadata:
             ASSET_ATTRIBUTIONS[dest.name] = {
-                "provider": "pexels", "source_url": metadata.get("source_url") or "https://www.pexels.com/",
-                "photographer": metadata.get("photographer"), "photographer_url": metadata.get("photographer_url"),
-                "media_type": metadata.get("media_type") or kind, "media_id": metadata.get("media_id"),
+                "provider": metadata.get("provider") or source,
+                "source_url": metadata.get("source_url") or ("https://www.pexels.com/" if source == "pexels" else ""),
+                "title": clean_metadata_text(metadata.get("title") or metadata.get("text")),
+                "creator": clean_metadata_text(metadata.get("creator") or metadata.get("photographer")),
+                "creator_url": metadata.get("creator_url") or metadata.get("photographer_url"),
+                "photographer": metadata.get("photographer"),
+                "photographer_url": metadata.get("photographer_url"),
+                "license": clean_metadata_text(metadata.get("license")),
+                "license_url": clean_metadata_text(metadata.get("license_url")),
+                "media_type": metadata.get("media_type") or kind,
+                "media_id": metadata.get("media_id"),
             }
+            # A fresh validated download replaces any legacy unlicensed cache entry.
+            UNLICENSED_CACHED_ASSETS.discard(dest.name)
         return dest.name, source
     return None, "missing"
 
@@ -827,6 +950,8 @@ def assign(tag_val, orient, blocked=None):
         )
         for ext in ext_candidates:
             candidate = stem + ext
+            if candidate in UNLICENSED_CACHED_ASSETS:
+                continue
             if (VIS / candidate).exists() and (kind == "image" or candidate in PREEXISTING) and (kind == "image" or candidate not in blocked):
                 used = usage.get(candidate, 0)
                 if used < MAX_REUSE:
@@ -986,6 +1111,7 @@ def main():
     MANIFEST.write_text(json.dumps({
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "policy": {"pexels_timeout_s": API_T, "pexels_max_retries": RETRY,
+                   "media_license_policy": "allow CC0/Public Domain and CC BY; reject NC, ND, SA and unknown licenses",
                    "max_reuse_per_file": MAX_REUSE,
                    "semantic_reuse": "last_resort",
                    "motion_fallback_seconds": MOTION_SECONDS,
