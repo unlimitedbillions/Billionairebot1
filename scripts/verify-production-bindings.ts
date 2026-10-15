@@ -38,7 +38,7 @@ export async function validateProductionBindings(jobs: ProductionJob[]): Promise
     // One production scene per script line is required. Multiple visual tags
     // on one line usually indicate that word-count expansion appended narration
     // to a tagged scene; parseScript would otherwise merge/drop a visual.
-    const multiTagLines = script.split(/\\r?\\n/).map((line, index) => ({
+    const multiTagLines = script.split(/\r?\n/).map((line, index) => ({
       line: index + 1,
       count: [...line.matchAll(VISUAL_RE)].length,
     })).filter((entry) => entry.count > 1);
