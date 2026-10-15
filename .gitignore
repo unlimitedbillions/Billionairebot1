@@ -98,6 +98,7 @@ agentic-pipeline/**/*.candidate.*
 voicebox-test-output/
 
 # Temporary downloaded assets and runtime generator directories
+models/piper/
 images/
 videos/
 music/
