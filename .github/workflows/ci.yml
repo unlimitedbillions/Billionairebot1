@@ -47,9 +47,15 @@ jobs:
             python -m piper.download_voices en_US-lessac-medium --data-dir models/piper
           fi
           python -m piper -m "$GITHUB_WORKSPACE/models/piper/en_US-lessac-medium.onnx" -f /tmp/piper-ci-smoke.wav -- "Piper offline speech is ready."
-          DURATION="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /tmp/piper-ci-smoke.wav)"
-          awk -v d="$DURATION" 'BEGIN { exit !(d >= 0.5) }'
-          echo "[piper-ci-smoke] Verified local speech duration: ${DURATION}s."
+          python - <<'PY'
+          import wave
+          with wave.open("/tmp/piper-ci-smoke.wav", "rb") as audio:
+              duration = audio.getnframes() / audio.getframerate()
+              samples = audio.readframes(audio.getnframes())
+          if duration < 0.5 or not any(samples):
+              raise SystemExit(f"Piper output invalid: duration={duration:.3f}s or silent samples")
+          print(f"[piper-ci-smoke] Verified non-silent local speech duration: {duration:.2f}s.")
+          PY
 
       - name: Typecheck
         run: npm run typecheck
