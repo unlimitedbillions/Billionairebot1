@@ -408,8 +408,16 @@ def archive_videos(query):
             title = str(doc.get("title") or ident)
             description = str(doc.get("description") or "")
             item_meta = m.get("metadata") or {}
-            license_name = clean_metadata_text(item_meta.get("license") or item_meta.get("licenseurl"))
-            license_url = clean_metadata_text(item_meta.get("licenseurl") or (item_meta.get("license") if str(item_meta.get("license") or "").startswith("http") else ""))
+            raw_license = clean_metadata_text(item_meta.get("license"))
+            license_url = clean_metadata_text(item_meta.get("licenseurl") or (raw_license if raw_license.lower().startswith(("http://", "https://")) else ""))
+            license_name = "" if raw_license.lower().startswith(("http://", "https://")) else raw_license
+            if not license_name:
+                if "publicdomain/zero/" in license_url.lower():
+                    license_name = "CC0"
+                elif "publicdomain/mark/" in license_url.lower():
+                    license_name = "Public Domain Mark"
+                elif "creativecommons.org/licenses/by/" in license_url.lower():
+                    license_name = "CC BY"
             if not license_allows_commercial_use(license_name, license_url):
                 log(f"  archive item skipped (missing or unsuitable reuse license): {ident}")
                 continue
