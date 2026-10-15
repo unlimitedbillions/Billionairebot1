@@ -138,7 +138,7 @@ def license_allows_commercial_use(license_name, license_url=""):
         return True
     if re.search(r"creativecommons\.org/licenses/by(?:/|$)", url):
         return True
-    return name in {"by", "cc by", "pdm"}
+    return name in {"by", "cc by", "pdm"} or name.startswith("cc by ")
 
 
 def log(m):
