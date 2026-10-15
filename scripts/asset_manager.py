@@ -17,7 +17,7 @@ Rules:
         Pollinations/LoremFlickr are not production-critical providers.
   * Wikimedia/Openverse/Internet Archive media is accepted only when provider
     metadata identifies a commercially usable, adaptable license (CC0/Public
-    Domain, CC BY or CC BY-SA). NC, ND and unknown licenses are rejected.
+    Domain or CC BY). NC, ND, SA and unknown licenses are rejected.
   * Creator, source and license metadata are stored in the manifest and upload
     description; legacy stock files without recorded licensing are not reused.
   * Semantic asset reuse is a LAST-RESORT fallback only, after real video and
