@@ -13,7 +13,9 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
         self.old_vis, self.old_cache = am.VIS, am.CACHE
         self.old_preexisting = set(am.PREEXISTING)
         self.old_attributions = dict(am.ASSET_ATTRIBUTIONS)
+        self.old_unlicensed = set(am.UNLICENSED_CACHED_ASSETS)
         am.ASSET_ATTRIBUTIONS.clear()
+        am.UNLICENSED_CACHED_ASSETS.clear()
         am.VIS = self.root / "input" / "visuals"
         am.CACHE = self.root / "cache"
         am.PREEXISTING.clear()
@@ -27,6 +29,8 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
         am.PREEXISTING.update(self.old_preexisting)
         am.ASSET_ATTRIBUTIONS.clear()
         am.ASSET_ATTRIBUTIONS.update(self.old_attributions)
+        am.UNLICENSED_CACHED_ASSETS.clear()
+        am.UNLICENSED_CACHED_ASSETS.update(self.old_unlicensed)
         am.usage.clear()
         self.tmp.cleanup()
 
@@ -75,6 +79,99 @@ class AssetManagerLocalVisualTests(unittest.TestCase):
         self.assertIn("https://www.pexels.com/video/example-123/", description)
         self.assertTrue(description.startswith("Original description."))
 
+
+
+    def test_license_policy_allows_commercial_adaptable_media_only(self):
+        self.assertTrue(am.license_allows_commercial_use("CC0 1.0", "https://creativecommons.org/publicdomain/zero/1.0/"))
+        self.assertTrue(am.license_allows_commercial_use("CC BY 4.0", "https://creativecommons.org/licenses/by/4.0/"))
+        self.assertTrue(am.license_allows_commercial_use("CC BY-SA 4.0", "https://creativecommons.org/licenses/by-sa/4.0/"))
+        self.assertFalse(am.license_allows_commercial_use("CC BY-NC 4.0", "https://creativecommons.org/licenses/by-nc/4.0/"))
+        self.assertFalse(am.license_allows_commercial_use("CC BY-ND 4.0", "https://creativecommons.org/licenses/by-nd/4.0/"))
+        self.assertFalse(am.license_allows_commercial_use("", ""))
+
+    def test_wikimedia_search_preserves_creator_and_license_metadata(self):
+        response = {
+            "query": {"pages": {"1": {"index": 1, "title": "File:Example.jpg", "imageinfo": [{
+                "mime": "image/jpeg", "size": 12000,
+                "thumburl": "https://upload.wikimedia.org/example.jpg",
+                "url": "https://upload.wikimedia.org/original-example.jpg",
+                "extmetadata": {
+                    "LicenseShortName": {"value": "CC BY 4.0"},
+                    "LicenseUrl": {"value": "https://creativecommons.org/licenses/by/4.0/"},
+                    "Artist": {"value": "<a href='https://example.com/creator'>Example Creator</a>"},
+                },
+            }]}}},
+        }
+        with patch.object(am, "get", return_value=response):
+            results = am.wikimedia_images("Example Creator")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["provider"], "wikimedia")
+        self.assertEqual(results[0]["creator"], "Example Creator")
+        self.assertEqual(results[0]["license"], "CC BY 4.0")
+        self.assertIn("commons.wikimedia.org/wiki/File:Example.jpg", results[0]["source_url"])
+
+    def test_wikimedia_rejects_noncommercial_license(self):
+        response = {
+            "query": {"pages": {"1": {"index": 1, "title": "File:Example.jpg", "imageinfo": [{
+                "mime": "image/jpeg", "size": 12000,
+                "thumburl": "https://upload.wikimedia.org/example.jpg",
+                "url": "https://upload.wikimedia.org/original-example.jpg",
+                "extmetadata": {
+                    "LicenseShortName": {"value": "CC BY-NC 4.0"},
+                    "LicenseUrl": {"value": "https://creativecommons.org/licenses/by-nc/4.0/"},
+                    "Artist": {"value": "Example Creator"},
+                },
+            }]}}},
+        }
+        with patch.object(am, "get", return_value=response):
+            self.assertEqual(am.wikimedia_images("Example Creator"), [])
+
+    def test_openverse_filters_noncommercial_results_and_preserves_credit(self):
+        response = {"results": [
+            {"url": "https://example.org/by.jpg", "title": "A photo", "creator": "Creator",
+             "creator_url": "https://example.org/creator", "foreign_landing_url": "https://example.org/work",
+             "license": "by", "license_url": "https://creativecommons.org/licenses/by/4.0/"},
+            {"url": "https://example.org/nc.jpg", "title": "NC photo", "creator": "Creator",
+             "foreign_landing_url": "https://example.org/nc-work", "license": "by-nc",
+             "license_url": "https://creativecommons.org/licenses/by-nc/4.0/"},
+        ]}
+        with patch.object(am, "get", return_value=response):
+            results = am.openverse_images("business office")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["provider"], "openverse")
+        self.assertEqual(results[0]["source_url"], "https://example.org/work")
+        self.assertEqual(results[0]["license"], "by")
+
+    def test_archive_skips_unknown_license_and_keeps_licensed_metadata(self):
+        search = {"response": {"docs": [{"identifier": "licensed-item", "title": "Business footage", "description": "office"}]}}
+        metadata = {"metadata": {
+            "licenseurl": "https://creativecommons.org/licenses/by/4.0/",
+            "creator": "Archive Creator",
+        }, "files": [{"name": "business.mp4", "format": "MPEG4", "size": "100000"}]}
+        with patch.object(am, "get", side_effect=[search, metadata]):
+            results = am.archive_videos("business office")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["provider"], "archive")
+        self.assertEqual(results[0]["creator"], "Archive Creator")
+        self.assertEqual(results[0]["license_url"], "https://creativecommons.org/licenses/by/4.0/")
+
+        unlicensed = {"metadata": {"creator": "Unknown Creator"},
+                      "files": [{"name": "business.mp4", "format": "MPEG4", "size": "100000"}]}
+        with patch.object(am, "get", side_effect=[search, unlicensed]):
+            self.assertEqual(am.archive_videos("business office"), [])
+
+    def test_wikimedia_credits_are_added_to_upload_description(self):
+        episode = {"scenes": [{"attribution": {
+            "provider": "wikimedia", "source_url": "https://commons.wikimedia.org/wiki/File:Example.jpg",
+            "title": "File:Example.jpg", "creator": "Example Creator",
+            "license": "CC BY 4.0", "license_url": "https://creativecommons.org/licenses/by/4.0/",
+        }}]}
+        jobs = [{"description": "Original description."}]
+        am.apply_attribution_credits([episode], jobs)
+        self.assertIn("Original description.", jobs[0]["description"])
+        self.assertIn("Example Creator", jobs[0]["description"])
+        self.assertIn("CC BY 4.0", jobs[0]["description"])
+        self.assertIn("https://commons.wikimedia.org/wiki/File:Example.jpg", jobs[0]["description"])
 
 if __name__ == "__main__":
     unittest.main()
