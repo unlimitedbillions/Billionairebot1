@@ -69,7 +69,7 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
  * spreading those objects over defaults used to pass "undefined" to edge-tts.
  */
 export function normalizeVoiceConfig(input?: Partial<VoiceConfig> | null): VoiceConfig {
-    const candidate = input && typeof input === 'object' ? input : {};
+    const candidate: Partial<VoiceConfig> = input && typeof input === 'object' ? input : {};
     const voice = typeof candidate.voice === 'string' && candidate.voice.trim()
         ? candidate.voice.trim()
         : DEFAULT_VOICE_CONFIG.voice;
