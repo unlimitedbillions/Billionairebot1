@@ -37,7 +37,7 @@ jobs:
         run: npx tsx scripts/verify-production-bindings.ts --self-test
 
       - name: Restore offline Piper model cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: models/piper
           key: piper-en-us-lessac-medium-v1

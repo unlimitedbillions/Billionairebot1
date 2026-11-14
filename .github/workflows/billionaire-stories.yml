@@ -55,7 +55,7 @@ jobs:
         run: pip install --disable-pip-version-check -r requirements.txt
 
       - name: Restore Piper offline voice model cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: models/piper
           key: piper-en-us-lessac-medium-v1
@@ -78,7 +78,7 @@ jobs:
           echo "[piper-smoke] Local Piper speech verified (${DURATION}s)."
 
       - name: Restore asset pool cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             input/visuals
